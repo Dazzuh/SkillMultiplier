@@ -26,6 +26,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 .mypy_cache/
+release/
 
 # Environments
 .env
