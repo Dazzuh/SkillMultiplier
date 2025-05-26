@@ -68,7 +68,7 @@ public class SkillMultiplier : BaseUnityPlugin
         };
         Configuration.DisableFatigue.SettingChanged += (sender, args) =>
         {
-            if (Configuration.DisableFatigue.Value)
+            if (Configuration.DisableFatigue.Value && Configuration.Enable.Value)
             {
                 new SkillClassFatiguePatch().Enable();
             }
