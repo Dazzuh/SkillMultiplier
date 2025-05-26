@@ -39,7 +39,7 @@ namespace SkillMultiplier.Configuration
             Enable = _configFile.Bind("General", "Enabled", true, new ConfigDescription(
                 "Enable or disable the mod. Default is true (enabled).",
                 null,
-                new ConfigurationManagerAttributes { Order = 1 }
+                new ConfigurationManagerAttributes { Order = 3 }
             ));
 
             DisableFatigue = _configFile.Bind("General", "Disable Fatigue", true, new ConfigDescription(
@@ -54,7 +54,7 @@ namespace SkillMultiplier.Configuration
                 new ConfigDescription(
                     "Global multiplier for all skills. Range: -100 to 100. Default is 1 (no change).",
                     new AcceptableValueRange<float>(-100, 100),
-                    new ConfigurationManagerAttributes { Order = 3 }
+                    new ConfigurationManagerAttributes { Order = 1 }
                 )
             );
 
