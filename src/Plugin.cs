@@ -18,18 +18,9 @@ public class SkillMultiplier : BaseUnityPlugin
         Logger = base.Logger;
         Configuration = new Config(base.Config);
 
-        // Subscribe to config change events
-        Configuration.Enable.SettingChanged += (sender, args) =>
-        {
-            ApplyPatches();
-        };
-        Configuration.DisableFatigue.SettingChanged += (sender, args) =>
-        {
-            ApplyPatches();
-        };
-
         new MenuScreenPatch().Enable();
         ApplyPatches();
+        SubscribeToConfigChanges();
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
     }
 
@@ -53,6 +44,40 @@ public class SkillMultiplier : BaseUnityPlugin
         }
     }
 
+    private void SubscribeToConfigChanges()
+    {
+        Configuration.Enable.SettingChanged += (sender, args) =>
+        {
+            if (Configuration.Enable.Value)
+            {
+                new SkillClassPatch().Enable();
+                if (Configuration.DisableFatigue.Value)
+                {
+                    new SkillClassFatiguePatch().Enable();
+                }
+                else
+                {
+                    new SkillClassFatiguePatch().Disable();
+                }
+            }
+            else
+            {
+                new SkillClassPatch().Disable();
+                new SkillClassFatiguePatch().Disable();
+            }
+        };
+        Configuration.DisableFatigue.SettingChanged += (sender, args) =>
+        {
+            if (Configuration.DisableFatigue.Value)
+            {
+                new SkillClassFatiguePatch().Enable();
+            }
+            else
+            {
+                new SkillClassFatiguePatch().Disable();
+            }
+        };
+    }
     public void logDebug(string message)
     {
         if (Configuration.Debug.Value)
