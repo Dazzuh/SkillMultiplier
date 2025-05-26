@@ -39,12 +39,12 @@ namespace SkillMultiplier.Configuration
             Enable = _configFile.Bind("General", "Enabled", true, new ConfigDescription(
                 "Enable or disable the mod. Default is true (enabled).",
                 null,
-                new ConfigurationManagerAttributes { Order = 3 }
+                new ConfigurationManagerAttributes { Order = 30 }
             ));
 
             DisableFatigue = _configFile.Bind("General", "Disable Fatigue", true, new ConfigDescription(
                 "If enabled, fatigue will be disabled for all skills. Default is true (fatigue disabled).", null,
-                new ConfigurationManagerAttributes { Order = 2 }
+                new ConfigurationManagerAttributes { Order = 20 }
             ));
 
             GlobalMultiplier = _configFile.Bind(
