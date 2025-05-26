@@ -12,8 +12,9 @@ namespace SkillMultiplier.Configuration
         private static ManualLogSource _logger => SkillMultiplier.Logger;
 
         public ConfigEntry<bool> Debug { get; private set; }
-        public ConfigEntry<int> GlobalMultiplier { get; private set; }
+        public ConfigEntry<bool> Enable { get; private set; }
         public ConfigEntry<bool> DisableFatigue { get; private set; }
+        public ConfigEntry<int> GlobalMultiplier { get; private set; }
 
         public List<string> SkillIds { get; private set; } = new List<string>();
         public List<string> SkillIdsToExclude = new List<string>
@@ -34,10 +35,25 @@ namespace SkillMultiplier.Configuration
                 null,
                 new ConfigurationManagerAttributes { IsAdvanced = true }
             ));
-            GlobalMultiplier = _configFile.Bind("Global Multiplier", "Value", 1, "Global multiplier for all skills. Default is 1 (no change).");
+
+            Enable = _configFile.Bind("General", "Enabled", true, new ConfigDescription(
+                "Enable or disable the mod. Default is true (enabled).",
+                null,
+                new ConfigurationManagerAttributes { IsAdvanced = true }
+            ));
+
+            GlobalMultiplier = _configFile.Bind(
+                "General",
+                "Global Multiplier",
+                1,
+                new ConfigDescription(
+                    "Global multiplier for all skills. Range: -100 to 100. Default is 1 (no change).",
+                    new AcceptableValueRange<int>(-100, 100)
+                )
+            );
 
             DisableFatigue = _configFile.Bind("Disable Fatigue", "Enabled", true, new ConfigDescription(
-"If enabled, fatigue will be disabled for all skills. Default is true (fatigue disabled).", null));
+                "If enabled, fatigue will be disabled for all skills. Default is true (fatigue disabled).", null));
 
             ph = new ConfigDefinition("Multipliers", "Loading...");
 
@@ -66,7 +82,15 @@ namespace SkillMultiplier.Configuration
 
             SkillIds.ExecuteForEach(SkillId =>
             {
-                _configFile.Bind("Multipliers", SkillId, 1, $"Multiplier for skill {SkillId}. Default is 1 (no change).");
+                _configFile.Bind(
+                "Multipliers",
+                SkillId,
+                1,
+                new ConfigDescription(
+                    $"Multiplier for skill {SkillId}. Range: -100 to 100. Default is 1 (no change).",
+                    new AcceptableValueRange<int>(-100, 100)
+                )
+            );
             });
             _configFile.Save();
         }
