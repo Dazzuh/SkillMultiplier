@@ -14,7 +14,7 @@ namespace SkillMultiplier.Configuration
         public ConfigEntry<bool> Debug { get; private set; }
         public ConfigEntry<bool> Enable { get; private set; }
         public ConfigEntry<bool> DisableFatigue { get; private set; }
-        public ConfigEntry<int> GlobalMultiplier { get; private set; }
+        public ConfigEntry<float> GlobalMultiplier { get; private set; }
 
         public List<string> SkillIds { get; private set; } = new List<string>();
         public List<string> SkillIdsToExclude = new List<string>
@@ -39,21 +39,24 @@ namespace SkillMultiplier.Configuration
             Enable = _configFile.Bind("General", "Enabled", true, new ConfigDescription(
                 "Enable or disable the mod. Default is true (enabled).",
                 null,
-                new ConfigurationManagerAttributes { IsAdvanced = true }
+                new ConfigurationManagerAttributes { Order = 1 }
+            ));
+
+            DisableFatigue = _configFile.Bind("General", "Disable Fatigue", true, new ConfigDescription(
+                "If enabled, fatigue will be disabled for all skills. Default is true (fatigue disabled).", null,
+                new ConfigurationManagerAttributes { Order = 2 }
             ));
 
             GlobalMultiplier = _configFile.Bind(
                 "General",
                 "Global Multiplier",
-                1,
+                1f,
                 new ConfigDescription(
                     "Global multiplier for all skills. Range: -100 to 100. Default is 1 (no change).",
-                    new AcceptableValueRange<int>(-100, 100)
+                    new AcceptableValueRange<float>(-100, 100),
+                    new ConfigurationManagerAttributes { Order = 3 }
                 )
             );
-
-            DisableFatigue = _configFile.Bind("Disable Fatigue", "Enabled", true, new ConfigDescription(
-                "If enabled, fatigue will be disabled for all skills. Default is true (fatigue disabled).", null));
 
             ph = new ConfigDefinition("Multipliers", "Loading...");
 
@@ -85,27 +88,27 @@ namespace SkillMultiplier.Configuration
                 _configFile.Bind(
                 "Multipliers",
                 SkillId,
-                1,
+                1f,
                 new ConfigDescription(
                     $"Multiplier for skill {SkillId}. Range: -100 to 100. Default is 1 (no change).",
-                    new AcceptableValueRange<int>(-100, 100)
+                    new AcceptableValueRange<float>(-100, 100)
                 )
             );
             });
             _configFile.Save();
         }
 
-        public int GetMultiplier(string skillId)
+        public float GetMultiplier(string skillId)
         {
             if (string.IsNullOrEmpty(skillId))
             {
                 _logger.LogWarning("Skill ID is null or empty, returning default multiplier of 1.");
                 return 1; // Default multiplier if skillId is invalid
             }
-            _configFile.TryGetEntry("Multipliers", skillId, out ConfigEntry<int> multiplierEntry);
+            _configFile.TryGetEntry("Multipliers", skillId, out ConfigEntry<float> multiplierEntry);
             if (multiplierEntry != null)
             {
-                int multiplier = multiplierEntry.Value;
+                float multiplier = multiplierEntry.Value;
                 return multiplier;
             }
             else

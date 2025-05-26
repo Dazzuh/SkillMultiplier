@@ -18,10 +18,39 @@ public class SkillMultiplier : BaseUnityPlugin
         Logger = base.Logger;
         Configuration = new Config(base.Config);
 
-        new SkillClassPatch().Enable();
+        // Subscribe to config change events
+        Configuration.Enable.SettingChanged += (sender, args) =>
+        {
+            ApplyPatches();
+        };
+        Configuration.DisableFatigue.SettingChanged += (sender, args) =>
+        {
+            ApplyPatches();
+        };
+
         new MenuScreenPatch().Enable();
-        new SkillClassFatiguePatch().Enable();
+        ApplyPatches();
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
+    }
+
+    private void ApplyPatches()
+    {
+        if (Configuration.Enable.Value)
+        {
+            new SkillClassPatch().Enable();
+        }
+        else
+        {
+            new SkillClassPatch().Disable();
+        }
+        if (Configuration.DisableFatigue.Value && Configuration.Enable.Value)
+        {
+            new SkillClassFatiguePatch().Enable();
+        }
+        else
+        {
+            new SkillClassFatiguePatch().Disable();
+        }
     }
 
     public void logDebug(string message)

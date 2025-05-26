@@ -2,7 +2,6 @@ using System.Reflection;
 using EFT;
 using EFT.UI;
 using SPT.Reflection.Patching;
-using SPT.Reflection.Utils;
 
 
 namespace SkillMultiplier.Patches

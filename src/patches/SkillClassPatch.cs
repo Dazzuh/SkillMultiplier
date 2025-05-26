@@ -17,14 +17,14 @@ namespace SkillMultiplier.Patches
             var skillIds = SkillMultiplier.Configuration.SkillIds;
             plugin.logDebug($"SkillClassPatch.Prefix called for skill: {__instance.Id}");
 
-            int multiplier = 1;
+            float multiplier = 1f;
             if (skillIds.Contains(__instance.Id.ToString()))
             {
                 multiplier = SkillMultiplier.Configuration.GetMultiplier(__instance.Id.ToString());
             }
 
             var beforeGlobal = multiplier;
-            var globalMultiplier = SkillMultiplier.Configuration.GlobalMultiplier.Value;
+            float globalMultiplier = SkillMultiplier.Configuration.GlobalMultiplier.Value;
             multiplier *= globalMultiplier;
 
             plugin.logDebug($"Skill {__instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
@@ -44,11 +44,8 @@ namespace SkillMultiplier.Patches
         [PatchPostfix]
         private static void Postfix(SkillClass __instance)
         {
-            if (SkillMultiplier.Configuration.DisableFatigue.Value)
-            {
-                __instance.float_3 = 1.0f; // Effectiveness
-                __instance.float_4 = float.MaxValue; // Fatigue reset timer
-            }
+            __instance.float_3 = 1.0f; // Effectiveness
+            __instance.float_4 = float.MaxValue; // Fatigue reset timer
         }
     }
 }
