@@ -14,6 +14,7 @@ namespace SkillMultiplier.Configuration
         public ConfigEntry<bool> Debug { get; private set; }
         public ConfigEntry<bool> Enable { get; private set; }
         public ConfigEntry<bool> DisableFatigue { get; private set; }
+        public ConfigEntry<bool> IncreaseLimits { get; private set; }
         public ConfigEntry<float> GlobalMultiplier { get; private set; }
 
         public List<string> SkillIds { get; private set; } = new List<string>();
@@ -47,16 +48,15 @@ namespace SkillMultiplier.Configuration
                 new ConfigurationManagerAttributes { Order = 20 }
             ));
 
-            GlobalMultiplier = _configFile.Bind(
-                "General",
-                "Global Multiplier",
-                1f,
-                new ConfigDescription(
-                    "Global multiplier for all skills. Range: -100 to 100. Default is 1 (no change).",
-                    new AcceptableValueRange<float>(-100, 100),
-                    new ConfigurationManagerAttributes { Order = 1 }
-                )
-            );
+            IncreaseLimits = _configFile.Bind("General", "Increase Limits", false, new ConfigDescription(
+                "If enabled, raises the range of skill multipliers to -1000 to 1000. REQUIRES RESTART. Default is false (no change).",
+                null,
+                new ConfigurationManagerAttributes { Order = 10, IsAdvanced = true }
+            ));
+            UpdateGlobalMultiplierRange();
+            
+            // Subscribe to IncreaseLimits changes to update ranges dynamically
+            IncreaseLimits.SettingChanged += (sender, args) => UpdateGlobalMultiplierRange();
 
             ph = new ConfigDefinition("Multipliers", "Loading...");
 
@@ -85,15 +85,18 @@ namespace SkillMultiplier.Configuration
 
             SkillIds.ExecuteForEach(SkillId =>
             {
+                var range = GetSkillMultiplierRange();
+                var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
+
                 _configFile.Bind(
-                "Multipliers",
-                SkillId,
-                1f,
-                new ConfigDescription(
-                    $"Multiplier for skill {SkillId}. Range: -100 to 100. Default is 1 (no change).",
-                    new AcceptableValueRange<float>(-100, 100)
-                )
-            );
+                    "Multipliers",
+                    SkillId,
+                    1f,
+                    new ConfigDescription(
+                        $"Multiplier for skill {SkillId}. Range: {rangeText}. Default is 1 (no change).",
+                        range
+                    )
+                );
             });
             _configFile.Save();
         }
@@ -116,6 +119,33 @@ namespace SkillMultiplier.Configuration
                 _logger.LogWarning($"No multiplier found for skill {skillId}, returning default value of 1.");
                 return 1; // Default multiplier if not found
             }
+        }
+
+        private void UpdateGlobalMultiplierRange()
+        {
+            var range = GetGlobalMultiplierRange();
+            var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
+            
+            GlobalMultiplier = _configFile.Bind(
+                "General",
+                "Global Multiplier",
+                1f,
+                new ConfigDescription(
+                    $"Global multiplier for all skills. Range: {rangeText}. Default is 1 (no change).",
+                    range,
+                    new ConfigurationManagerAttributes { Order = 1 }
+                )
+            );
+        }
+
+        private AcceptableValueRange<float> GetGlobalMultiplierRange()
+        {
+            return IncreaseLimits.Value ? new AcceptableValueRange<float>(-1000, 1000) : new AcceptableValueRange<float>(-100, 100);
+        }
+
+        private AcceptableValueRange<float> GetSkillMultiplierRange()
+        {
+            return IncreaseLimits.Value ? new AcceptableValueRange<float>(-1000, 1000) : new AcceptableValueRange<float>(-100, 100);
         }
     }
 }
