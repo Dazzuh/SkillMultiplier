@@ -32,7 +32,7 @@ namespace SkillMultiplier.Configuration
             _configFile = configFile;
 
             Debug = _configFile.Bind("Debug", "Enabled", false, new ConfigDescription(
-                "Enable or disable debug logging. Default is false (disabled).",
+                "Enable or disable debug logging, may negatively impact performance, don't leave this enabled. Default is false (disabled).",
                 null,
                 new ConfigurationManagerAttributes { IsAdvanced = true }
             ));
