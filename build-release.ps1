@@ -3,6 +3,7 @@
 # Variables
 $projectDir = "$(Split-Path -Parent $MyInvocation.MyCommand.Path)"
 $srcDir = Join-Path $projectDir "src"
+$serverDir = Join-Path $projectDir "server"
 $buildDir = Join-Path $srcDir "bin\Debug\netstandard2.1"
 $releaseDir = Join-Path $projectDir "release"
 $pluginName = "dazzuh.skillmultiplier.dll"
@@ -17,6 +18,15 @@ if ($version) {
     $version = $version.Trim()
 } else {
     $version = "unknown"
+}
+
+# Update server package.json version
+$packageJsonPath = Join-Path $serverDir "package.json"
+if (Test-Path $packageJsonPath) {
+    $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+    $packageJson.version = $version
+    $packageJson | ConvertTo-Json -Depth 10 | Set-Content $packageJsonPath -Encoding UTF8
+    Write-Host "Updated server package.json version to: $version"
 }
 
 $zipName = "SkillMultiplier-$version.zip"
@@ -39,12 +49,20 @@ if (Test-Path $tempDir) {
     Remove-Item $tempDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path (Join-Path $tempDir "BepInEx/plugins") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $tempDir "user/mods/dazzuh-skillmultiplier") -Force | Out-Null
 
 # Copy plugin
 Copy-Item $pluginSource (Join-Path $tempDir $targetPluginPath) -Force
+Write-Host "Copied plugin: $pluginName"
+
+# Copy server files
+$serverModDir = Join-Path $tempDir "user/mods/dazzuh-skillmultiplier"
+Copy-Item (Join-Path $serverDir "package.json") $serverModDir -Force
+Copy-Item (Join-Path $serverDir "src") $serverModDir -Recurse -Force
+Write-Host "Copied server files to: user/mods/dazzuh-skillmultiplier/"
 
 # Create zip
-Compress-Archive -Path (Join-Path $tempDir "BepInEx") -DestinationPath $zipPath
+Compress-Archive -Path (Join-Path $tempDir "BepInEx"), (Join-Path $tempDir "user") -DestinationPath $zipPath
 
 # Clean up temp
 Remove-Item $tempDir -Recurse -Force
