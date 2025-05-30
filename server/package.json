@@ -8,9 +8,7 @@
   "isBundleMod": false,
   "main": "src/mod.js",
   "scripts": {
-    "setup": "npm i",
-    "build": "node ./build.mjs",
-    "buildinfo": "node ./build.mjs --verbose"
+    "setup": "npm i"
   },
   "devDependencies": {
     "@types/node": "20.11",
