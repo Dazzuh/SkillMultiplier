@@ -13,13 +13,13 @@ namespace SkillMultiplier.Patches
             return typeof(MenuScreen).GetMethod("Show", [typeof(Profile), typeof(MatchmakerPlayerControllerClass), typeof(ESessionMode)]);
         }
 
-        private static bool configGenerated = false;
+        private static bool _configGenerated;
         [PatchPostfix]
         private static void Postfix()
         {
-            if (configGenerated) return;
+            if (_configGenerated) return;
             SkillMultiplier.Configuration.GenerateConfig();
-            configGenerated = true;
+            _configGenerated = true;
         }
     }
 }

@@ -1,15 +1,14 @@
+using System.Collections.Generic;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using SPT.Reflection.Utils;
-using System.Collections.Generic;
 
 namespace SkillMultiplier.Configuration
 {
     public class Config
     {
         private readonly ConfigFile _configFile;
-        private static SkillMultiplier _plugin => SkillMultiplier.Instance;
-        private static ManualLogSource _logger => SkillMultiplier.Logger;
+        private static ManualLogSource Logger => SkillMultiplier.Logger;
 
         public ConfigEntry<bool> Debug { get; private set; }
         public ConfigEntry<bool> Enable { get; private set; }
@@ -17,18 +16,18 @@ namespace SkillMultiplier.Configuration
         public ConfigEntry<bool> IncreaseLimits { get; private set; }
         public ConfigEntry<float> GlobalMultiplier { get; private set; }
 
-        public List<string> SkillIds { get; private set; } = new List<string>();
-        public List<string> SkillIdsToExclude = new List<string>
-        {
+        public List<string> SkillIds { get; private set; } = [];
+        public readonly List<string> SkillIdsToExclude =
+        [
             "BotReload",
             "BotSound"
-        };
+        ];
 
-        public ConfigDefinition ph;
+        public readonly ConfigDefinition Ph;
 
         public Config(ConfigFile configFile)
         {
-            _logger.LogInfo("Initializing configuration...");
+            Logger.LogInfo("Initializing configuration...");
             _configFile = configFile;
 
             Debug = _configFile.Bind("Debug", "Enabled", false, new ConfigDescription(
@@ -56,44 +55,41 @@ namespace SkillMultiplier.Configuration
             UpdateGlobalMultiplierRange();
             
             // Subscribe to IncreaseLimits changes to update ranges dynamically
-            IncreaseLimits.SettingChanged += (sender, args) => UpdateGlobalMultiplierRange();
+            IncreaseLimits.SettingChanged += (_, _) => UpdateGlobalMultiplierRange();
 
-            ph = new ConfigDefinition("Multipliers", "Loading...");
+            Ph = new ConfigDefinition("Multipliers", "Loading...");
 
-            _configFile.Bind(ph, "Please wait, loading skills...", new ConfigDescription("This entry will be replaced with skill multipliers once loaded."));
-            _logger.LogInfo("Configuration initialized.");
+            _configFile.Bind(Ph, "Please wait, loading skills...", new ConfigDescription("This entry will be replaced with skill multipliers once loaded."));
+            Logger.LogInfo("Configuration initialized.");
         }
 
         public void GenerateConfig()
         {
-            if (_configFile.ContainsKey(ph))
-            {
-                _configFile.Remove(ph);
-            }
+            _configFile.Remove(Ph);
             var session = ClientAppUtils.GetClientApp()?.GetClientBackEndSession();
-            var profile = session.Profile;
+            var profile = session!.Profile;
             profile.Skills.Skills.ExecuteForEach(skill =>
             {
                 if (SkillIdsToExclude.Contains(skill.Id.ToString()))
                 {
-                    _plugin.logDebug($"Skipping excluded skill: {skill.Id}");
+                    SkillMultiplier.LogDebug($"Skipping excluded skill: {skill.Id}");
                     return;
                 }
                 SkillIds.Add(skill.Id.ToString());
-                _plugin.logDebug($"Skill: {skill.Id} added to SkillIds list.");
+                SkillMultiplier.LogDebug($"Skill: {skill.Id} added to SkillIds list.");
             });
 
-            SkillIds.ExecuteForEach(SkillId =>
+            SkillIds.ExecuteForEach(skillId =>
             {
                 var range = GetSkillMultiplierRange();
                 var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
 
                 _configFile.Bind(
                     "Multipliers",
-                    SkillId,
+                    skillId,
                     1f,
                     new ConfigDescription(
-                        $"Multiplier for skill {SkillId}. Range: {rangeText}. Default is 1 (no change).",
+                        $"Multiplier for skill {skillId}. Range: {rangeText}. Default is 1 (no change).",
                         range
                     )
                 );
@@ -105,7 +101,7 @@ namespace SkillMultiplier.Configuration
         {
             if (string.IsNullOrEmpty(skillId))
             {
-                _logger.LogWarning("Skill ID is null or empty, returning default multiplier of 1.");
+                Logger.LogWarning("Skill ID is null or empty, returning default multiplier of 1.");
                 return 1; // Default multiplier if skillId is invalid
             }
             _configFile.TryGetEntry("Multipliers", skillId, out ConfigEntry<float> multiplierEntry);
@@ -116,7 +112,7 @@ namespace SkillMultiplier.Configuration
             }
             else
             {
-                _logger.LogWarning($"No multiplier found for skill {skillId}, returning default value of 1.");
+                Logger.LogWarning($"No multiplier found for skill {skillId}, returning default value of 1.");
                 return 1; // Default multiplier if not found
             }
         }

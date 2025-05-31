@@ -6,17 +6,19 @@ using SkillMultiplier.Patches;
 namespace SkillMultiplier;
 
 [BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
+// ReSharper disable once ClassNeverInstantiated.Global
 public class SkillMultiplier : BaseUnityPlugin
 {
     public static SkillMultiplier Instance { get; private set; }
-    internal static new ManualLogSource Logger;
+    internal new static ManualLogSource Logger;
     public static Config Configuration { get; private set; }
 
+    // ReSharper disable once UnusedMember.Local
     private void Awake()
     {
         Instance = this;
         Logger = base.Logger;
-        Configuration = new Config(base.Config);
+        Configuration = new Config(Config);
 
         new MenuScreenPatch().Enable();
         ApplyPatches();
@@ -46,7 +48,7 @@ public class SkillMultiplier : BaseUnityPlugin
 
     private void SubscribeToConfigChanges()
     {
-        Configuration.Enable.SettingChanged += (sender, args) =>
+        Configuration.Enable.SettingChanged += (_, _) =>
         {
             if (Configuration.Enable.Value)
             {
@@ -66,7 +68,7 @@ public class SkillMultiplier : BaseUnityPlugin
                 new SkillClassFatiguePatch().Disable();
             }
         };
-        Configuration.DisableFatigue.SettingChanged += (sender, args) =>
+        Configuration.DisableFatigue.SettingChanged += (_, _) =>
         {
             if (Configuration.DisableFatigue.Value && Configuration.Enable.Value)
             {
@@ -78,7 +80,7 @@ public class SkillMultiplier : BaseUnityPlugin
             }
         };
     }
-    public void logDebug(string message)
+    public static void LogDebug(string message)
     {
         if (Configuration.Debug.Value)
         {
