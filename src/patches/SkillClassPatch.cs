@@ -11,25 +11,25 @@ namespace SkillMultiplier.Patches
         }
 
         [PatchPrefix]
-        private static void Prefix(ref float val, SkillClass instance)
+        private static void Prefix(object skillAction, ref float val, SkillClass __instance)
         {
             var skillIds = SkillMultiplier.Configuration.SkillIds;
-            SkillMultiplier.LogDebug($"SkillClassPatch.Prefix called for skill: {instance.Id}");
+            SkillMultiplier.LogDebug($"SkillClassPatch.Prefix called for skill: {__instance.Id}");
 
             float multiplier = 1f;
-            if (skillIds.Contains(instance.Id.ToString()))
+            if (skillIds.Contains(__instance.Id.ToString()))
             {
-                multiplier = SkillMultiplier.Configuration.GetMultiplier(instance.Id.ToString());
+                multiplier = SkillMultiplier.Configuration.GetMultiplier(__instance.Id.ToString());
             }
 
             var beforeGlobal = multiplier;
             float globalMultiplier = SkillMultiplier.Configuration.GlobalMultiplier.Value;
             multiplier *= globalMultiplier;
 
-            SkillMultiplier.LogDebug($"Skill {instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
+            SkillMultiplier.LogDebug($"Skill {__instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
 
             val *= multiplier;
-            SkillMultiplier.LogDebug($"Skill {instance.Id} value adjusted to {val} after applying multiplier.");
+            SkillMultiplier.LogDebug($"Skill {__instance.Id} value adjusted to {val} after applying multiplier.");
         }
     }
 
@@ -41,10 +41,10 @@ namespace SkillMultiplier.Patches
         }
 
         [PatchPostfix]
-        private static void Postfix(SkillClass instance)
+        private static void Postfix(SkillClass __instance)
         {
-            instance.float_3 = 1.0f; // Effectiveness
-            instance.float_4 = float.MaxValue; // Fatigue reset timer
+            __instance.float_3 = 1.0f; // Effectiveness
+            __instance.float_4 = float.MaxValue; // Fatigue reset timer
         }
     }
 }
