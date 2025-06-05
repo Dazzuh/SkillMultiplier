@@ -1,6 +1,6 @@
 import {DependencyContainer} from "tsyringe";
 
-import {IPostSptLoadMod} from "@spt/models/external/IPostSptLoadMod";
+import {IPostDBLoadMod} from "@spt/models/external/IPostDBLoadMod";
 import {ILogger} from "@spt/models/spt/utils/ILogger";
 import {ConfigServer} from "@spt/servers/ConfigServer";
 import {ConfigTypes} from "@spt/models/enums/ConfigTypes";
@@ -8,13 +8,13 @@ import {IHideoutConfig} from "@spt/models/spt/config/IHideoutConfig";
 import {DatabaseServer} from "@spt/servers/DatabaseServer";
 import {IDatabaseTables} from "@spt/models/spt/server/IDatabaseTables";
 
-class SkillMultiplier implements IPostSptLoadMod {
+class SkillMultiplier implements IPostDBLoadMod {
     private configServer: ConfigServer;
     private databaseServer: DatabaseServer;
     private logger: ILogger;
     private modConfig = require("../config/config.json");
 
-    public postSptLoad(container: DependencyContainer): void {
+    public postDBLoad(container: DependencyContainer): void {
         this.logger = container.resolve<ILogger>("WinstonLogger");
         this.configServer = container.resolve<ConfigServer>("ConfigServer");
         this.databaseServer = container.resolve<DatabaseServer>("DatabaseServer");
@@ -31,7 +31,7 @@ class SkillMultiplier implements IPostSptLoadMod {
 
             const originalExpCraftAmount = config.expCraftAmount;
             config.expCraftAmount = originalExpCraftAmount * multiplier;
-            this.logger.info(`Set crafting skill multiplier to ${multiplier}. Original expCraftAmount: ${originalExpCraftAmount}, New expCraftAmount: ${config.expCraftAmount}`);
+            this.logger.info(`[SkillMultiplier] Crafting Multiplier: ${multiplier}. Original expCraftAmount: ${originalExpCraftAmount}, New expCraftAmount: ${config.expCraftAmount}`);
         }
 
         if (skill === "hideoutmanagement") {
@@ -43,8 +43,8 @@ class SkillMultiplier implements IPostSptLoadMod {
             tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft = skillPointsPerCraft * multiplier;
             tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = skillPointsPerAreaUpgrade * multiplier;
 
-            this.logger.info(`Set hideout management skill multiplier to ${multiplier}. Original SkillPointsPerCraft: ${skillPointsPerCraft}, New SkillPointsPerCraft: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft}`);
-            this.logger.info(`Original SkillPointsPerAreaUpgrade: ${skillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade}`);
+            this.logger.info(`[SkillMultiplier] HideoutManagement Multiplier: ${multiplier}. Original SkillPointsPerCraft: ${skillPointsPerCraft}, New SkillPointsPerCraft: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft}`);
+            this.logger.info(`[SkillMultiplier] Original SkillPointsPerAreaUpgrade: ${skillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade}`);
         }
     }
 }
