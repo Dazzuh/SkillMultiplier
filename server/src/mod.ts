@@ -49,4 +49,5 @@ class SkillMultiplier implements IPostDBLoadMod {
     }
 }
 
+// noinspection JSUnusedGlobalSymbols
 export const mod = new SkillMultiplier();
