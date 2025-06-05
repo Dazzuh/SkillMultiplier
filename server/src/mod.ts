@@ -1,43 +1,40 @@
-import { DependencyContainer } from "tsyringe";
+import {DependencyContainer} from "tsyringe";
 
-import { IPostSptLoadMod } from "@spt/models/external/IPostSptLoadMod";
-import { ILogger } from "@spt/models/spt/utils/ILogger";
-import { ConfigServer } from "@spt/servers/ConfigServer";
-import { ConfigTypes } from "@spt/models/enums/ConfigTypes";
-import { IHideoutConfig } from "@spt/models/spt/config/IHideoutConfig";
-import { DatabaseServer } from "@spt/servers/DatabaseServer";
-import { IDatabaseTables } from "@spt/models/spt/server/IDatabaseTables";
+import {IPostSptLoadMod} from "@spt/models/external/IPostSptLoadMod";
+import {ILogger} from "@spt/models/spt/utils/ILogger";
+import {ConfigServer} from "@spt/servers/ConfigServer";
+import {ConfigTypes} from "@spt/models/enums/ConfigTypes";
+import {IHideoutConfig} from "@spt/models/spt/config/IHideoutConfig";
+import {DatabaseServer} from "@spt/servers/DatabaseServer";
+import {IDatabaseTables} from "@spt/models/spt/server/IDatabaseTables";
 
-class SkillMultiplier implements IPostSptLoadMod
-{
+class SkillMultiplier implements IPostSptLoadMod {
     private configServer: ConfigServer;
     private databaseServer: DatabaseServer;
     private logger: ILogger;
+    private modConfig = require("../config/config.json");
 
-    public postSptLoad(container: DependencyContainer): void
-    {
+    public postSptLoad(container: DependencyContainer): void {
         this.logger = container.resolve<ILogger>("WinstonLogger");
         this.configServer = container.resolve<ConfigServer>("ConfigServer");
         this.databaseServer = container.resolve<DatabaseServer>("DatabaseServer");
 
-        this.setSkillMultiplier("crafting", 2);
-        this.setSkillMultiplier("hideoutmanagement", 2);
+        if (!this.modConfig.enabled) return;
+
+        this.setSkillMultiplier("crafting", this.modConfig?.crafting);
+        this.setSkillMultiplier("hideoutmanagement", this.modConfig?.hideoutManagement);
     }
 
-    public setSkillMultiplier(skill: string, multiplier: number): void
-    {
-        if (skill === "crafting")
-        {
+    public setSkillMultiplier(skill: string, multiplier: number): void {
+        if (skill === "crafting") {
             const config = this.configServer.getConfig<IHideoutConfig>(ConfigTypes.HIDEOUT);
-            
+
             const originalExpCraftAmount = config.expCraftAmount;
-            const newExpCraftAmount = originalExpCraftAmount * multiplier;
-            config.expCraftAmount = newExpCraftAmount;
+            config.expCraftAmount = originalExpCraftAmount * multiplier;
             this.logger.info(`Set crafting skill multiplier to ${multiplier}. Original expCraftAmount: ${originalExpCraftAmount}, New expCraftAmount: ${config.expCraftAmount}`);
         }
 
-        if (skill === "hideoutmanagement")
-        {
+        if (skill === "hideoutmanagement") {
             const tables: IDatabaseTables = this.databaseServer.getTables();
 
             const skillPointsPerCraft = tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft;

@@ -26,7 +26,7 @@ public class SkillMultiplier : BaseUnityPlugin
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
     }
 
-    private void ApplyPatches()
+    private static void ApplyPatches()
     {
         if (Configuration.Enable.Value)
         {
@@ -46,7 +46,7 @@ public class SkillMultiplier : BaseUnityPlugin
         }
     }
 
-    private void SubscribeToConfigChanges()
+    private static void SubscribeToConfigChanges()
     {
         Configuration.Enable.SettingChanged += (_, _) =>
         {
