@@ -9,15 +9,13 @@ import {DatabaseServer} from "@spt/servers/DatabaseServer";
 import {IDatabaseTables} from "@spt/models/spt/server/IDatabaseTables";
 
 class SkillMultiplier implements IPostDBLoadMod {
-    private configServer: ConfigServer;
-    private databaseServer: DatabaseServer;
+    private container: DependencyContainer;
     private logger: ILogger;
     private modConfig = require("../config/config.json");
 
     public postDBLoad(container: DependencyContainer): void {
         this.logger = container.resolve<ILogger>("WinstonLogger");
-        this.configServer = container.resolve<ConfigServer>("ConfigServer");
-        this.databaseServer = container.resolve<DatabaseServer>("DatabaseServer");
+        this.container = container;
 
         if (!this.modConfig.enabled) return;
 
@@ -27,7 +25,8 @@ class SkillMultiplier implements IPostDBLoadMod {
 
     public setSkillMultiplier(skill: string, multiplier: number): void {
         if (skill === "crafting") {
-            const config = this.configServer.getConfig<IHideoutConfig>(ConfigTypes.HIDEOUT);
+            const configServer: ConfigServer = this.container.resolve<ConfigServer>("ConfigServer");
+            const config: IHideoutConfig = configServer.getConfig<IHideoutConfig>(ConfigTypes.HIDEOUT);
 
             const originalExpCraftAmount = config.expCraftAmount;
             config.expCraftAmount = originalExpCraftAmount * multiplier;
@@ -35,16 +34,16 @@ class SkillMultiplier implements IPostDBLoadMod {
         }
 
         if (skill === "hideoutmanagement") {
-            const tables: IDatabaseTables = this.databaseServer.getTables();
+            const databaseServer: DatabaseServer = this.container.resolve<DatabaseServer>("DatabaseServer");
+            const tables: IDatabaseTables = databaseServer.getTables();
 
-            const skillPointsPerCraft = tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft;
-            const skillPointsPerAreaUpgrade = tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade
+            const { SkillPointsPerCraft, SkillPointsPerAreaUpgrade } = tables.globals.config.SkillsSettings.HideoutManagement;
 
-            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft = skillPointsPerCraft * multiplier;
-            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = skillPointsPerAreaUpgrade * multiplier;
+            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft = SkillPointsPerCraft * multiplier;
+            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = SkillPointsPerAreaUpgrade * multiplier;
 
-            this.logger.info(`[SkillMultiplier] HideoutManagement Multiplier: ${multiplier}. Original SkillPointsPerCraft: ${skillPointsPerCraft}, New SkillPointsPerCraft: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft}`);
-            this.logger.info(`[SkillMultiplier] Original SkillPointsPerAreaUpgrade: ${skillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade}`);
+            this.logger.info(`[SkillMultiplier] HideoutManagement Multiplier: ${multiplier}. Original SkillPointsPerCraft: ${SkillPointsPerCraft}, New SkillPointsPerCraft: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft}`);
+            this.logger.info(`[SkillMultiplier] Original SkillPointsPerAreaUpgrade: ${SkillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade}`);
         }
     }
 }
