@@ -11,11 +11,10 @@ namespace SkillMultiplier.Patches
         }
 
         [PatchPrefix]
-        private static void Prefix(ref float val, SkillClass __instance)
+        private static void Prefix(object skillAction, ref float val, SkillClass __instance)
         {
-            var plugin = SkillMultiplier.Instance;
             var skillIds = SkillMultiplier.Configuration.SkillIds;
-            plugin.logDebug($"SkillClassPatch.Prefix called for skill: {__instance.Id}");
+            SkillMultiplier.LogDebug($"SkillClassPatch.Prefix called for skill: {__instance.Id}");
 
             float multiplier = 1f;
             if (skillIds.Contains(__instance.Id.ToString()))
@@ -27,10 +26,10 @@ namespace SkillMultiplier.Patches
             float globalMultiplier = SkillMultiplier.Configuration.GlobalMultiplier.Value;
             multiplier *= globalMultiplier;
 
-            plugin.logDebug($"Skill {__instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
+            SkillMultiplier.LogDebug($"Skill {__instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
 
             val *= multiplier;
-            plugin.logDebug($"Skill {__instance.Id} value adjusted to {val} after applying multiplier.");
+            SkillMultiplier.LogDebug($"Skill {__instance.Id} value adjusted to {val} after applying multiplier.");
         }
     }
 
