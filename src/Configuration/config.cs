@@ -1,7 +1,9 @@
 using System.Collections.Generic;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using EFT.Communications;
 using SPT.Reflection.Utils;
+// ReSharper disable CanSimplifyDictionaryRemovingWithSingleCall
 
 namespace SkillMultiplier.Configuration
 {
@@ -29,6 +31,7 @@ namespace SkillMultiplier.Configuration
         {
             Logger.LogInfo("Initializing configuration...");
             _configFile = configFile;
+            Ph = new ConfigDefinition("Multipliers", "Loading...");
 
             Debug = _configFile.Bind("Debug", "Enabled", false, new ConfigDescription(
                 "Enable or disable debug logging, may negatively impact performance, don't leave this enabled. Default is false (disabled).",
@@ -52,12 +55,21 @@ namespace SkillMultiplier.Configuration
                 null,
                 new ConfigurationManagerAttributes { Order = 10, IsAdvanced = true }
             ));
-            UpdateGlobalMultiplierRange();
-            
-            // Subscribe to IncreaseLimits changes to update ranges dynamically
-            IncreaseLimits.SettingChanged += (_, _) => UpdateGlobalMultiplierRange();
+            var range = GetGlobalMultiplierRange();
+            var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
+            GlobalMultiplier = _configFile.Bind(
+                "General",
+                "Global Multiplier",
+                1f,
+                new ConfigDescription(
+                    $"Global multiplier for all skills. Range: {rangeText}. Default is 1 (no change).",
+                    range,
+                    new ConfigurationManagerAttributes { Order = 1 }
+                )
+            );
 
-            Ph = new ConfigDefinition("Multipliers", "Loading...");
+            // Subscribe to IncreaseLimits changes to update ranges dynamically
+            IncreaseLimits.SettingChanged += (_, _) => OnLimitsChanged();
 
             _configFile.Bind(Ph, "Please wait, loading skills...", new ConfigDescription("This entry will be replaced with skill multipliers once loaded."));
             Logger.LogInfo("Configuration initialized.");
@@ -65,7 +77,10 @@ namespace SkillMultiplier.Configuration
 
         public void GenerateConfig()
         {
-            _configFile.Remove(Ph);
+            if (_configFile.ContainsKey(Ph))
+            {
+                _configFile.Remove(Ph);
+            }
             var session = ClientAppUtils.GetClientApp()?.GetClientBackEndSession();
             var profile = session!.Profile;
             profile.Skills.Skills.ExecuteForEach(skill =>
@@ -83,7 +98,6 @@ namespace SkillMultiplier.Configuration
             {
                 var range = GetSkillMultiplierRange();
                 var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
-
                 _configFile.Bind(
                     "Multipliers",
                     skillId,
@@ -110,28 +124,14 @@ namespace SkillMultiplier.Configuration
                 float multiplier = multiplierEntry.Value;
                 return multiplier;
             }
-            else
-            {
-                Logger.LogWarning($"No multiplier found for skill {skillId}, returning default value of 1.");
-                return 1; // Default multiplier if not found
-            }
+
+            Logger.LogWarning($"No multiplier found for skill {skillId}, returning default value of 1.");
+            return 1; // Default multiplier if not found
         }
 
-        private void UpdateGlobalMultiplierRange()
+        private static void OnLimitsChanged()
         {
-            var range = GetGlobalMultiplierRange();
-            var rangeText = IncreaseLimits.Value ? "-1000 to 1000" : "-100 to 100";
-            
-            GlobalMultiplier = _configFile.Bind(
-                "General",
-                "Global Multiplier",
-                1f,
-                new ConfigDescription(
-                    $"Global multiplier for all skills. Range: {rangeText}. Default is 1 (no change).",
-                    range,
-                    new ConfigurationManagerAttributes { Order = 1 }
-                )
-            );
+            NotificationManagerClass.DisplayMessageNotification("Game restart required to change limits.", ENotificationDurationType.Long);
         }
 
         private AcceptableValueRange<float> GetGlobalMultiplierRange()
