@@ -68,7 +68,6 @@ namespace SkillMultiplier.Configuration
                 )
             );
 
-            // Subscribe to IncreaseLimits changes to update ranges dynamically
             IncreaseLimits.SettingChanged += (_, _) => OnLimitsChanged();
 
             _configFile.Bind(Ph, "Please wait, loading skills...", new ConfigDescription("This entry will be replaced with skill multipliers once loaded."));
