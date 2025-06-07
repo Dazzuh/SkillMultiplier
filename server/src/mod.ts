@@ -37,13 +37,14 @@ class SkillMultiplier implements IPostDBLoadMod {
             const databaseServer: DatabaseServer = this.container.resolve<DatabaseServer>("DatabaseServer");
             const tables: IDatabaseTables = databaseServer.getTables();
 
-            const { SkillPointsPerCraft, SkillPointsPerAreaUpgrade } = tables.globals.config.SkillsSettings.HideoutManagement;
+            const hideoutManagement = tables.globals.config.SkillsSettings.HideoutManagement;
+            const { SkillPointsPerCraft, SkillPointsPerAreaUpgrade } = hideoutManagement;
 
-            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft = SkillPointsPerCraft * multiplier;
-            tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = SkillPointsPerAreaUpgrade * multiplier;
+            hideoutManagement.SkillPointsPerCraft = SkillPointsPerCraft * multiplier;
+            hideoutManagement.SkillPointsPerAreaUpgrade = SkillPointsPerAreaUpgrade * multiplier;
 
-            this.logger.info(`[SkillMultiplier] HideoutManagement Multiplier: ${multiplier}. Original SkillPointsPerCraft: ${SkillPointsPerCraft}, New SkillPointsPerCraft: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerCraft}`);
-            this.logger.info(`[SkillMultiplier] Original SkillPointsPerAreaUpgrade: ${SkillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${tables.globals.config.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade}`);
+            this.logger.info(`[SkillMultiplier] HideoutManagement Multiplier: ${multiplier}. Original SkillPointsPerCraft: ${SkillPointsPerCraft}, New SkillPointsPerCraft: ${hideoutManagement.SkillPointsPerCraft}`);
+            this.logger.info(`[SkillMultiplier] Original SkillPointsPerAreaUpgrade: ${SkillPointsPerAreaUpgrade}, New SkillPointsPerAreaUpgrade: ${hideoutManagement.SkillPointsPerAreaUpgrade}`);
         }
     }
 }
