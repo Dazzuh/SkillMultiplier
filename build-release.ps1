@@ -27,6 +27,10 @@ if (Test-Path $packageJsonPath) {
     $packageJson.version = $version
     $packageJson | ConvertTo-Json -Depth 10 | Set-Content $packageJsonPath -Encoding UTF8
     Write-Host "Updated server package.json version to: $version"
+    # Reformat package.json using Prettier for consistent formatting
+    Push-Location $serverDir
+    npx prettier --write package.json
+    Pop-Location
 }
 
 $zipName = "SkillMultiplier-$version.zip"
