@@ -25,7 +25,8 @@ $packageJsonPath = Join-Path $serverDir "package.json"
 if (Test-Path $packageJsonPath) {
     $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
     $packageJson.version = $version
-    $packageJson | ConvertTo-Json -Depth 10 | Set-Content $packageJsonPath -Encoding UTF8
+    $json = $packageJson | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($packageJsonPath, $json, (New-Object System.Text.UTF8Encoding($false)) )
     Write-Host "Updated server package.json version to: $version"
     # Reformat package.json using Prettier for consistent formatting
     Push-Location $serverDir
