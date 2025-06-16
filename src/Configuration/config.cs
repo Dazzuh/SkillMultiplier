@@ -22,7 +22,9 @@ namespace SkillMultiplier.Configuration
         public readonly List<string> SkillIdsToExclude =
         [
             "BotReload",
-            "BotSound"
+            "BotSound",
+            "HideoutManagement",
+            "Crafting"
         ];
 
         public readonly ConfigDefinition Ph;
