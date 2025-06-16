@@ -63,6 +63,7 @@ Write-Host "Copied plugin: $pluginName"
 $serverModDir = Join-Path $tempDir "user/mods/dazzuh-skillmultiplier"
 Copy-Item (Join-Path $serverDir "package.json") $serverModDir -Force
 Copy-Item (Join-Path $serverDir "src") $serverModDir -Recurse -Force
+Copy-Item (Join-Path $serverDir "config") $serverModDir -Recurse -Force
 Write-Host "Copied server files to: user/mods/dazzuh-skillmultiplier/"
 
 # Create zip
