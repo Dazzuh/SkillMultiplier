@@ -1,5 +1,6 @@
 using System.Reflection;
 using SPT.Reflection.Patching;
+using static SkillMultiplier.SkillMultiplier;
 
 namespace SkillMultiplier.Patches
 {
@@ -7,14 +8,13 @@ namespace SkillMultiplier.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return typeof(SkillClass).GetMethod("OnTrigger", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return typeof(EFT.BaseSkill).GetMethod("OnTrigger", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         }
 
         [PatchPrefix]
-        private static void Prefix(object skillAction, ref float val, SkillClass __instance)
+        private static void Prefix(object skillAction, ref float val, EFT.BaseSkill __instance)
         {
             var skillIds = SkillMultiplier.Configuration.SkillIds;
-            SkillMultiplier.LogDebug($"SkillClassPatch.Prefix called for skill: {__instance.Id}");
 
             float multiplier = 1f;
             if (skillIds.Contains(__instance.Id.ToString()))
@@ -26,10 +26,9 @@ namespace SkillMultiplier.Patches
             float globalMultiplier = SkillMultiplier.Configuration.GlobalMultiplier.Value;
             multiplier *= globalMultiplier;
 
-            SkillMultiplier.LogDebug($"Skill {__instance.Id} has a multiplier of {beforeGlobal} with a global multiplier of {globalMultiplier} becomes {multiplier}.");
-
+            LogDebug($"Skill {__instance.Id} gained exp {val} with a multiplier of {beforeGlobal} and a global multiplier of {globalMultiplier} becomes {multiplier}.");
             val *= multiplier;
-            SkillMultiplier.LogDebug($"Skill {__instance.Id} value adjusted to {val} after applying multiplier.");
+            LogDebug($"Skill {__instance.Id} exp adjusted to {val} after applying multiplier.");
         }
     }
 
@@ -37,14 +36,14 @@ namespace SkillMultiplier.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return typeof(SkillClass).GetMethod("UseEffectiveness", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return typeof(EFT.Skill).GetMethod("UseEffectiveness", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
         }
 
         [PatchPostfix]
-        private static void Postfix(SkillClass __instance)
+        private static void Postfix(EFT.Skill __instance)
         {
-            __instance.float_3 = 1.0f; // Effectiveness
-            __instance.float_4 = float.MaxValue; // Fatigue reset timer
+            __instance._effectiveness = 1.0f; // Effectiveness
+            __instance._fatigueTimer = float.MaxValue; // Fatigue reset time
         }
     }
 }

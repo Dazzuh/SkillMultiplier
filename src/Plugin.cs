@@ -9,14 +9,12 @@ namespace SkillMultiplier;
 // ReSharper disable once ClassNeverInstantiated.Global
 public class SkillMultiplier : BaseUnityPlugin
 {
-    public static SkillMultiplier Instance { get; private set; }
     internal new static ManualLogSource Logger;
     public static Config Configuration { get; private set; }
 
     // ReSharper disable once UnusedMember.Local
     private void Awake()
     {
-        Instance = this;
         Logger = base.Logger;
         Configuration = new Config(Config);
 
