@@ -28,33 +28,4 @@
         <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
     </PropertyGroup>
 
-    <Target Name="ZipRelease" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
-        <PropertyGroup>
-            <ReleaseDirectory>$(MSBuildProjectDirectory)\ReleaseZip\</ReleaseDirectory>
-            <ZipOutput>$(ReleaseDirectory)$(ModAuthor)-$(AssemblyName)-$(Version).zip</ZipOutput>
-            <ZipTempDir>$(IntermediateOutputPath)ReleaseZip\</ZipTempDir>
-        </PropertyGroup>
-
-        <!-- Create release directory -->
-        <MakeDir Directories="$(ReleaseDirectory)" />
-
-        <!-- Clean and create the temporary folder structure -->
-        <RemoveDir Directories="$(ZipTempDir)" />
-        <MakeDir Directories="$(ZipTempDir)SPT_Runtime\user\mods\$(ModAuthor)-$(AssemblyName)" />
-
-        <!-- Copy the release DLL into the correct SPT folder -->
-        <ItemGroup>
-            <ReleaseFiles Include="$(TargetDir)**\*" />
-        </ItemGroup>
-        <Copy SourceFiles="@(ReleaseFiles)" DestinationFiles="@(ReleaseFiles->'$(ZipTempDir)SPT_Runtime\user\mods\$(ModAuthor)-$(AssemblyName)\%(RecursiveDir)%(Filename)%(Extension)')" />
-
-        <!-- Create the ZIP -->
-        <ZipDirectory SourceDirectory="$(ZipTempDir)" DestinationFile="$(ZipOutput)" Overwrite="true" />
-
-        <Message Importance="High" Text="Created release zip: $(ZipOutput)" />
-    </Target>
-    <Target Name="PostBuildCopyPlugin" AfterTargets="PostBuildEvent">
-        <Exec Command='copy /Y "$(TargetPath)" "$(SPTDir)\SPT_Runtime\user\mods\$(ModAuthor)-$(AssemblyName)\$(TargetFileName)"' />
-    </Target>
-
 </Project>
