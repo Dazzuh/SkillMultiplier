@@ -1,7 +1,6 @@
 using System.Reflection;
 using EFT;
 using EFT.UI;
-using EFT.UI.Matchmaker;
 using SPT.Reflection.Patching;
 
 
@@ -11,7 +10,7 @@ namespace SkillMultiplier.Patches
     {
         protected override MethodBase GetTargetMethod()
         {
-            return typeof(MenuScreen).GetMethod("Show", [typeof(Profile), typeof(MatchmakerPlayersController), typeof(ESessionMode)]);
+            return typeof(MenuScreen).GetMethod("Show", new[] { typeof(Profile), typeof(MatchmakerPlayerControllerClass), typeof(ESessionMode) });
         }
 
         private static bool _configGenerated;

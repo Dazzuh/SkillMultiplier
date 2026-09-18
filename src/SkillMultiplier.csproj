@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <SPTDir Condition="'$(SPTDir)' == ''">S:\SPT-Dev\4.1</SPTDir>
+        <SPTDir Condition="'$(SPTDir)' == ''">S:\SPT-Dev\4.0</SPTDir>
     </PropertyGroup>
 
     <PropertyGroup>

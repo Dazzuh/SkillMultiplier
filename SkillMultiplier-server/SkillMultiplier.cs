@@ -1,23 +1,24 @@
 ﻿using System.Reflection;
-using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
-using SPTarkov.Server.Core.Helpers.Server;
+using SPTarkov.Server.Core.Helpers;
 using SPTarkov.Server.Core.Models.Spt.Config;
-using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Models.Utils;
+using SPTarkov.Server.Core.Servers;
 
 namespace SkillMultiplier;
 
-[Injectable(TypePriority = OnLoadOrder.PostLoad + 1)]
+[Injectable(TypePriority = OnLoadOrder.PostSptModLoader)]
 public class SkillMultiplier(
-    HideoutConfig hideoutConfig,
     ISptLogger<SkillMultiplier> logger,
-    GlobalTable globalTable,
+    DatabaseServer databaseServer,
+    ConfigServer configServer,
     ModHelper modHelper
 ) : IOnLoad
 {
-    public Task OnLoadAsync(CancellationToken cancellationToken)
+    public Task OnLoad()
     {
+        var hideoutConfig = configServer.GetConfig<HideoutConfig>();
         var pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
         var config = modHelper.GetJsonDataFromFile<ModConfig>(pathToMod, "config.json");
 
@@ -27,8 +28,9 @@ public class SkillMultiplier(
             return Task.CompletedTask;
         }
         var craftingExpAmount = hideoutConfig.CraftingExpAmount;
-        var skillPointsPerCraft = globalTable.Configuration.SkillsSettings.HideoutManagement.SkillPointsPerCraft;
-        var skillPointsPerAreaUpgrade = globalTable.Configuration.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade;
+        var skillsSettings = databaseServer.GetTables().Globals.Configuration.SkillsSettings;
+        var skillPointsPerCraft = skillsSettings.HideoutManagement.SkillPointsPerCraft;
+        var skillPointsPerAreaUpgrade = skillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade;
 
         var newCraftingExpAmount = craftingExpAmount * config.CraftingExpMultiplier;
         var newSkillPointsPerCraft = skillPointsPerCraft * config.HideoutExpMultiplier;
@@ -36,11 +38,10 @@ public class SkillMultiplier(
 
         hideoutConfig.CraftingExpAmount = newCraftingExpAmount;
 
-        globalTable.Configuration.SkillsSettings.HideoutManagement.SkillPointsPerCraft = newSkillPointsPerCraft;
-        globalTable.Configuration.SkillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = newSkillPointsPerAreaUpgrade;
+        skillsSettings.HideoutManagement.SkillPointsPerCraft = newSkillPointsPerCraft;
+        skillsSettings.HideoutManagement.SkillPointsPerAreaUpgrade = newSkillPointsPerAreaUpgrade;
         logger.Success($"[SkillMultiplier] Configs Edited Successfully, new values: crafting exp amount: {newCraftingExpAmount}, SkillPointsPerCraft: {newSkillPointsPerCraft}, SkillPointsPerAreaUpgrade: {newSkillPointsPerAreaUpgrade}");
 
-        // Return a completed task
         return Task.CompletedTask;
     }
 }

@@ -10,7 +10,6 @@ $releaseDir = Join-Path $projectDir "release"
 $pluginName = "dazzuh.skillmultiplier.dll"
 $serverPluginName = "SkillMultiplier-server.dll"
 $pluginSource = Join-Path $buildDir $pluginName
-$serverSource = Join-Path $serverBuildDir $serverPluginName
 $version = "unknown"
 
 # Get version from csproj
@@ -43,20 +42,20 @@ if (Test-Path $tempDir) {
     Remove-Item $tempDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path (Join-Path $tempDir "BepInEx/plugins") -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $tempDir "SPT_Runtime/user/mods/dazzuh-skillmultiplier") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $tempDir "SPT/user/mods/dazzuh-skillmultiplier") -Force | Out-Null
 
 # Copy plugin
 Copy-Item $pluginSource (Join-Path $tempDir $targetPluginPath) -Force
 Write-Host "Copied plugin: $pluginName"
 
 # Copy server files
-$serverModDir = Join-Path $tempDir "SPT_Runtime/user/mods/dazzuh-skillmultiplier"
+$serverModDir = Join-Path $tempDir "SPT/user/mods/dazzuh-skillmultiplier"
 Copy-Item (Join-Path $serverBuildDir $serverPluginName) $serverModDir -Recurse -Force
 Copy-Item (Join-Path $serverBuildDir "config.json") $serverModDir -Recurse -Force
-Write-Host "Copied server files to: SPT_Runtime/user/mods/dazzuh-skillmultiplier/"
+Write-Host "Copied server files to: SPT/user/mods/dazzuh-skillmultiplier/"
 
 # Create zip
-Compress-Archive -Path (Join-Path $tempDir "BepInEx"), (Join-Path $tempDir "SPT_Runtime") -DestinationPath $zipPath
+Compress-Archive -Path (Join-Path $tempDir "BepInEx"), (Join-Path $tempDir "SPT") -DestinationPath $zipPath
 
 # Clean up temp
 Remove-Item $tempDir -Recurse -Force

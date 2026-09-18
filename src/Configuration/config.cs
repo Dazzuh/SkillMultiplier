@@ -132,7 +132,7 @@ namespace SkillMultiplier.Configuration
 
         private static void OnLimitsChanged()
         {
-            NotificationManager.DisplayMessageNotification("Game restart required to change limits.", ENotificationDurationType.Long);
+            NotificationManagerClass.DisplayMessageNotification("Game restart required to change limits.", ENotificationDurationType.Long);
         }
 
         private AcceptableValueRange<float> GetGlobalMultiplierRange()
