@@ -1,4 +1,7 @@
 {
-    "CraftingExpMultiplier": 1.0,
-    "HideoutExpMultiplier": 1.0
+  "Enabled": true,
+  "DisableFatigue": true,
+  "GlobalMultiplier": 1.0,
+  "Multipliers": {},
+  "Actions": {}
 }

@@ -1,6 +1,7 @@
 namespace SkillMultiplier;
 
 using SPTarkov.Server.Core.Models.Spt.Mod;
+using SPTarkov.Server.Web;
 
 /// <summary>
 /// This is required for all mods.
@@ -8,8 +9,20 @@ using SPTarkov.Server.Core.Models.Spt.Mod;
 /// You don't have to do anything with it, other than fill it out.
 /// Properties you don't use may be left null.
 /// It is read by the mod loader when this mod is loaded.
+/// <para>
+/// <c>ModGuid</c> and <c>Name</c> are the previous release's, deliberately: SPT installs a mod at
+/// <c>user/mods/&lt;Author&gt;-&lt;Name&gt;</c>, so keeping them means an update lands on the folder that
+/// already exists rather than installing a second copy beside it.
+/// </para>
+/// <para>
+/// This also implements <see cref="IModBlazorMetadata"/>, which is what makes SPT serve the mod's
+/// <c>wwwroot</c> and list the UI on the SPT landing page. That interface is named for Blazor but its
+/// three properties are all that matter here - the server maps <c>&lt;mod folder&gt;/wwwroot</c> through
+/// a <c>PhysicalFileProvider</c> at the URL named by <see cref="WWWRootUrl"/>. No Razor component is
+/// involved, so the UI is plain HTML on the SPT server's own origin, not a Blazor page.
+/// </para>
 /// </summary>
-public record ModMetadata : IModMetadata
+public record ModMetadata : IModMetadata, IModBlazorMetadata
 {
     /// <summary>
     /// A unique identifier for the mod.
@@ -40,7 +53,7 @@ public record ModMetadata : IModMetadata
     /// MAJOR for breaking changes, MINOR for backwards-compatible features,
     /// and PATCH for backwards-compatible bug fixes.
     /// </summary>
-    public SemanticVersioning.Version Version { get; init; } = new("2.0.0");
+    public SemanticVersioning.Version Version { get; init; } = new("2.1.0");
 
     /// <summary>
     /// The range of SPT versions supported by this mod.
@@ -69,7 +82,7 @@ public record ModMetadata : IModMetadata
     /// such as its documentation, source code, or download page.
     /// Leave null when no URL is available.
     /// </summary>
-    public string? Url { get; init; } = "https://github.com/sp-tushonka/server-mod-examples";
+    public string? Url { get; init; } = "https://github.com/Dazzuh/SkillMultiplier";
 
     /// <summary>
     /// The license under which the mod is distributed.
@@ -82,4 +95,17 @@ public record ModMetadata : IModMetadata
     /// Set to true if the mod contains Prepatcher patches; otherwise leave false.
     /// </summary>
     public bool HasPrepatcher { get; init; } = false;
+
+    // --- IModBlazorMetadata -------------------------------------------------
+    // These three are what map the UI. A bare directory URL is NOT served (SPT's static file middleware
+    // has no default-document middleware behind it), so HomePage names index.html explicitly.
+    //
+    // The URL prefix, the routes in the router, the websocket hook and the client's own paths all read
+    // "skillmultiplier" together - splitting them would leave one half serving where the other half is
+    // not asking.
+    public string? WWWRootUrl { get; init; } = "skillmultiplier";
+
+    public string? HomePage { get; init; } = "/skillmultiplier/index.html";
+
+    public string? HomePageDescription { get; init; } = "Per-action skill XP multipliers.";
 }

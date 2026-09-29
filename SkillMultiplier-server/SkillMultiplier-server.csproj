@@ -1,24 +1,60 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <SPTDir Condition="'$(SPTDir)' == ''">S:\SPT-Dev\4.1</SPTDir>
+        <SPTRuntimeDir Condition="'$(SPTRuntimeDir)' == ''">S:\SPT-Dev\4.1\SPT_Runtime</SPTRuntimeDir>
     </PropertyGroup>
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <RootNamespace>SkillMultiplier</RootNamespace>
+        <!-- AssemblyName is left as the project name on purpose. It is the name the DLL already has in
+             every install of the previous release, so an update overwrites that file in place. Giving it
+             a new name would leave the old DLL sitting in the mod folder next to this one, and SPT would
+             load both. -->
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <OutputType>Library</OutputType>
         <ModAuthor>Dazzuh</ModAuthor>
-        <Version>2.0.0</Version>
+        <Version>2.1.0</Version>
         <OutputPath>bin\$(Configuration)\$(ProjectName)\$(AssemblyName)\</OutputPath>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     </PropertyGroup>
 
+    <!-- Referenced from the install rather than from NuGet, because the mod needs SPTarkov.Server.Web -
+         the interface that makes SPT serve this mod's wwwroot - which the package set does not carry. -->
     <ItemGroup>
-        <PackageReference Include="SPTushonka.Common" Version="4.1.5" />
-        <PackageReference Include="SPTushonka.DI" Version="4.1.5" />
-        <PackageReference Include="SPTushonka.Server.Core" Version="4.1.5" />
+        <Reference Include="SPTarkov.Common">
+            <HintPath>$(SPTRuntimeDir)\SPTarkov.Common.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="SPTarkov.DI">
+            <HintPath>$(SPTRuntimeDir)\SPTarkov.DI.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="SPTarkov.Server.Core">
+            <HintPath>$(SPTRuntimeDir)\SPTarkov.Server.Core.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="SPTarkov.Server.Web">
+            <HintPath>$(SPTRuntimeDir)\SPTarkov.Server.Web.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="SemanticVersioning">
+            <HintPath>$(SPTRuntimeDir)\SemanticVersioning.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- IWebSocketConnectionHandler's signatures use HttpContext (Microsoft.AspNetCore.Http) and
+             WebSocket, which live in the ASP.NET Core shared framework rather than the base library. -->
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <!-- Served from the mod folder by SPT's own static file middleware; copied here so bin/ is a
+         complete install tree and the deploy script has one source of truth. -->
+    <ItemGroup>
+        <None Update="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
+        <None Update="config.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">

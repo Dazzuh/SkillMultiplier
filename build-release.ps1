@@ -49,10 +49,14 @@ New-Item -ItemType Directory -Path (Join-Path $tempDir "SPT_Runtime/user/mods/da
 Copy-Item $pluginSource (Join-Path $tempDir $targetPluginPath) -Force
 Write-Host "Copied plugin: $pluginName"
 
-# Copy server files
+# Copy server files. wwwroot is the UI, and SPT serves it out of the mod folder - a release without it is a
+# mod with no page.
 $serverModDir = Join-Path $tempDir "SPT_Runtime/user/mods/dazzuh-skillmultiplier"
 Copy-Item (Join-Path $serverBuildDir $serverPluginName) $serverModDir -Recurse -Force
-Copy-Item (Join-Path $serverBuildDir "config.json") $serverModDir -Recurse -Force
+# config.json is deliberately NOT shipped: it is the user's file, and a release extracted over an existing
+# install would overwrite their tuning with defaults. A fresh install gets one seeded by the server itself
+# on first boot (LoadConfig writes the default when the file is absent).
+Copy-Item (Join-Path $serverBuildDir "wwwroot") $serverModDir -Recurse -Force
 Write-Host "Copied server files to: SPT_Runtime/user/mods/dazzuh-skillmultiplier/"
 
 # Create zip
