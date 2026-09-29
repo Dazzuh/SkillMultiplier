@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SkillMultiplier</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header>
+  <a class="home-btn" href="/" title="Back to the SPT server's own pages">&#8962; Server home</a>
+  <div class="brand">
+    <h1>SkillMultiplier</h1>
+    <p class="sub">Per-action skill experience multipliers &mdash; SPT 4.1</p>
+  </div>
+  <div class="controls">
+    <label class="toggle" title="Turn every multiplier off without losing them">
+      <input type="checkbox" id="enabled" />
+      <span>Mod enabled</span>
+    </label>
+    <label class="toggle" title="Remove the in-session XP decay, so a multiplier always pays its full rate">
+      <input type="checkbox" id="nofatigue" />
+      <span>No fatigue</span>
+    </label>
+    <button id="apply" class="primary">Apply</button>
+    <button id="reset" class="danger" title="Set every multiplier back to 1.00x">Reset all</button>
+  </div>
+</header>
+
+<div id="status" class="status" role="status" aria-live="polite"></div>
+
+<section id="migrate" class="migrate" hidden>
+  <h2>Carry over the previous version's settings?</h2>
+  <p class="note">
+    This version tunes individual actions where the old one tuned whole skills, and the maths behind the
+    gains changed with it &mdash; so nothing is carried over on its own. What each old value becomes is
+    listed under Upgrading in the readme; a carried skill lands on every one of its actions at once.
+  </p>
+  <div id="migrateRows"></div>
+</section>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="Filter skills or actions…" autocomplete="off" />
+  <div class="spacer"></div>
+  <span id="dirty" class="dirty" hidden>Unsaved changes</span>
+  <button id="expandAll" class="ghost">Expand all</button>
+  <button id="collapseAll" class="ghost">Collapse all</button>
+</div>
+
+<section class="global">
+  <div class="global-row">
+    <span class="global-name" title="One multiplier applied on top of every row below, by the game client while it runs">Global multiplier</span>
+    <input type="range" id="globalSlider" min="0" max="10" step="0.05" value="1" aria-label="Global multiplier" />
+    <input type="number" id="globalNumber" min="0" max="1000" step="0.05" value="1" aria-label="Global multiplier, exact" />
+    <span class="global-note">live, no restart</span>
+  </div>
+  <p class="note">
+    One number on top of every row: at 2.00 each row pays double whatever it says. Applied by the game
+    client the moment you press Apply &mdash; no restart. Crafting and Hideout Management are server-side
+    skills the client never sees, so the global does not reach them; their own rows below do (after a restart).
+  </p>
+</section>
+
+<main id="skills" class="skills"></main>
+
+<details class="advanced" id="advanced" hidden>
+  <summary><span class="adv-title">Advanced config &mdash; server-side duplicates</span> <span class="badge" id="advancedBadge"></span></summary>
+  <p class="note">
+    These rows scale a skill from the server's globals while the same skill also has client-side rows
+    above &mdash; and the two multiply together, so 2.00 here and 2.00 there pays 4.00 in game, not 2.00.
+    They also need a game restart, where the client rows apply live. They are kept out of the way so a
+    per-skill or global change cannot set both sides by accident; the group sliders above only touch the
+    live rows. Crafting and Hideout Management stay in the main list: the client never applies
+    multipliers to those two skills, so their server rows are the only lever, not a duplicate.
+  </p>
+  <div id="advancedBody"></div>
+</details>
+
+<details class="unsupported">
+  <summary>Not tunable and why</summary>
+  <p class="note">
+    Skills with no experience to multiply at all &mdash; checked against the server's globals and against the
+    actions the game client builds. They are missing from the list above on purpose: a slider that did
+    nothing would be worse than no slider, so the reason is listed instead.
+  </p>
+  <ul id="unsupportedList"></ul>
+</details>
+
+<footer>
+  <p>
+    Everything above is applied <strong>by the game client, while it is running</strong> &mdash; including the
+    fatigue switch. Values that live in the server's globals take effect at the next client start, so the
+    Apply message says when a restart is still needed. A save reaches a running game over its socket,
+    even mid-raid &mdash; and it only affects <em>future</em> XP: points already earned are untouched.
+  </p>
+  <p class="muted">
+    Base values come either from the server's live globals or, for the actions that only exist inside the
+    game client, from what the game has actually granted &mdash; the rows say which. Every description was
+    read from the game's own trigger condition for that action rather than guessed from a field's name.
+    <strong>No fatigue</strong> removes the decay that makes each point of a session worth
+    <code>0.6&times;</code> the one before it once you pass two points; it keeps the <code>1.3&times;</code>
+    bonus on a session's first point.
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,369 @@
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --panel-2: #22262e;
+  --line: #30353f;
+  --text: #e6e8ec;
+  --muted: #98a0ad;
+  --accent: #c8a45c;
+  --accent-2: #4e9e6a;
+  --danger: #b4544e;
+  --warn: #d9a441;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 "Segoe UI", Roboto, system-ui, sans-serif;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { margin: 0; font-size: 1.25rem; letter-spacing: .02em; }
+.sub { margin: .15rem 0 0; color: var(--muted); font-size: .8rem; }
+
+/* Back to the server's own pages. A link dressed as a button, first in the header so it sits at the
+   far left; the brand flexes to keep the controls pinned right. */
+.home-btn {
+  padding: .45rem .9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.home-btn:hover { border-color: var(--accent); }
+.brand { flex: 1; }
+
+.controls { display: flex; align-items: center; gap: .75rem; }
+
+.toggle { display: flex; align-items: center; gap: .45rem; color: var(--muted); cursor: pointer; }
+.toggle input { accent-color: var(--accent); width: 1.05rem; height: 1.05rem; }
+
+button {
+  font: inherit;
+  padding: .45rem .9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #1a1206; font-weight: 600; }
+button.danger:hover { border-color: var(--danger); color: var(--danger); }
+button.ghost { background: transparent; }
+
+.status {
+  margin: 1rem 1.5rem 0;
+  padding: .6rem .9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: none;
+}
+.status.show { display: block; }
+.status.ok { border-color: var(--accent-2); }
+.status.err { border-color: var(--danger); }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: 1rem 1.5rem .5rem;
+}
+.toolbar .spacer { flex: 1; }
+
+input[type="search"] {
+  width: min(340px, 50vw);
+  padding: .45rem .7rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+input[type="search"]:focus { outline: none; border-color: var(--accent); }
+
+.dirty { color: var(--warn); font-weight: 600; }
+
+.skills { padding: .5rem 1.5rem; display: flex; flex-direction: column; gap: .5rem; }
+
+.skill {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.skill > summary {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .65rem .9rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.skill > summary::-webkit-details-marker { display: none; }
+.skill > summary::before {
+  content: "\25B8";
+  color: var(--muted);
+  transition: transform .15s ease;
+}
+.skill[open] > summary::before { transform: rotate(90deg); }
+.skill > summary:hover { background: var(--panel-2); }
+
+.skill-name { font-weight: 600; flex: 1; }
+.badge {
+  font-size: .75rem;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: .1rem .55rem;
+}
+.badge.changed { color: var(--accent); border-color: var(--accent); }
+
+.actions { border-top: 1px solid var(--line); padding: .5rem .9rem .9rem; }
+
+.skill-summary {
+  margin: .35rem 0 .55rem;
+  color: var(--muted);
+  font-size: .84rem;
+}
+
+/* Column headings, on the same grid as .action so the two line up. Without these, "0.04 x 2.00 = 0.08"
+   is three unlabelled numbers. */
+.action-head {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(180px, 2fr) 84px minmax(150px, 1.1fr);
+  gap: .75rem;
+  padding: 0 0 .3rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.action-head .h-action { grid-column: 1; }
+.action-head .h-mult { grid-column: 2 / 4; }
+.action-head .h-eff { grid-column: 4; text-align: right; }
+
+/* Rows are placed by explicit grid area, so DOM order never decides the layout. */
+.action {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(180px, 2fr) 84px minmax(150px, 1.1fr);
+  gap: .3rem .75rem;
+  align-items: center;
+  padding: .5rem 0;
+  border-bottom: 1px solid rgba(255,255,255,.04);
+}
+.action:last-child { border-bottom: none; }
+.action.tuned { background: rgba(200,164,92,.05); }
+
+.action-label { grid-column: 1; grid-row: 1; color: var(--text); }
+.action-label small { display: block; color: var(--muted); font-size: .72rem; }
+
+/* What the action is and when it fires - from the client's own trigger condition. */
+.action-desc {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.action-desc:empty { display: none; }
+
+input[type="range"] { grid-column: 2; grid-row: 1; width: 100%; accent-color: var(--accent); }
+
+input[type="number"] {
+  grid-column: 3;
+  grid-row: 1;
+  width: 100%;
+  padding: .3rem .45rem;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+
+  /* No native spinner. Browsers draw it from the OS light theme regardless of this page's colours, so
+     in Firefox it lands as a bright block inside a dark field. Nothing is lost: the slider is the
+     nudge control, and arrow keys still step the box whenever it has focus. */
+  -moz-appearance: textfield;   /* Firefox (legacy property) */
+  appearance: textfield;        /* Firefox 80+ / the standard spelling */
+}
+input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+/* WebKit and Blink draw the spinner as pseudo-elements rather than a widget, so they ignore the above
+   and need their own removal. Firefox ignores these rules. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Global multiplier: one compounding number above the list, same grid language as a row. */
+.global {
+  margin: 1rem 1.5rem 0;
+  padding: .7rem .9rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.global-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.1fr) minmax(180px, 2fr) 84px minmax(150px, 1.1fr);
+  gap: .75rem;
+  align-items: center;
+}
+.global-name { font-weight: 600; }
+.global-row input[type="range"] { width: 100%; accent-color: var(--accent); }
+.global-note {
+  text-align: right;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--accent-2);
+}
+.global .note, .advanced .note {
+  margin: .45rem 0 0;
+  color: var(--muted);
+  font-size: .84rem;
+}
+
+/* Migration question: only ever shown when there is something to carry, never on a fresh install. */
+.migrate {
+  margin: 1rem 1.5rem 0;
+  padding: .7rem .9rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.migrate h2 { margin: 0 0 .2rem; font-size: 1rem; }
+.migrate .note {
+  margin: .45rem 0 0;
+  color: var(--muted);
+  font-size: .84rem;
+}
+.migrate-row {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-top: .6rem;
+  padding-top: .6rem;
+  border-top: 1px solid var(--line);
+}
+.migrate-row span { flex: 1; }
+.migrate-row button { white-space: nowrap; }
+
+/* Per-skill bulk controls: one slider driving the group's live rows, plus a link toggle. */
+.group-controls {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .45rem .7rem;
+  margin-bottom: .4rem;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: rgba(200,164,92,.04);
+}
+.group-label { color: var(--muted); font-size: .8rem; white-space: nowrap; }
+.group-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
+.group-controls input[type="range"]:disabled { opacity: .35; }
+.group-value { min-width: 4.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+.link-btn { font-size: .78rem; padding: .25rem .6rem; white-space: nowrap; }
+
+/* Advanced config: the same rows, rehoused. Reuses .action grid untouched. */
+.advanced {
+  margin: 1.5rem 1.5rem 0;
+  padding: .5rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.advanced summary { cursor: pointer; display: flex; align-items: center; gap: .6rem; }
+.adv-title { color: var(--muted); }
+.adv-skill { margin-top: .8rem; }
+.adv-skill:first-of-type { margin-top: .5rem; }
+.adv-name { margin: 0 0 .2rem; font-size: .9rem; }
+
+/* "0.04 x 2.00 = 0.08": the vanilla value, the one thing a slider changes, and the result. */
+.math {
+  grid-column: 4;
+  grid-row: 1;
+  text-align: right;
+  font-size: .78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.math .m-base,
+.math .m-mult { color: var(--text); }
+.math .m-eff { color: var(--muted); }
+.math .m-note {
+  margin-left: .35rem;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  opacity: .7;
+}
+.action.tuned .math .m-mult,
+.action.tuned .math .m-eff { color: var(--accent); }
+
+.unsupported {
+  margin: 1.5rem 1.5rem 0;
+  padding: .5rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.unsupported summary { cursor: pointer; color: var(--muted); }
+.unsupported .note { color: var(--muted); font-size: .85rem; }
+.unsupported li { margin: .35rem 0; font-size: .85rem; }
+.unsupported li strong { color: var(--text); }
+
+footer {
+  margin: 1.5rem 1.5rem 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .82rem;
+}
+footer .muted { opacity: .8; }
+code { color: var(--accent); }
+
+@media (max-width: 900px) {
+  .action-head { display: none; }
+
+  /* One column, natural order: label, slider, box, arithmetic, description. */
+  .action { grid-template-columns: 1fr; }
+  .action-label,
+  .action-desc,
+  .math,
+  .action input[type="range"],
+  .action input[type="number"] {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+  .math { text-align: left; }
+}

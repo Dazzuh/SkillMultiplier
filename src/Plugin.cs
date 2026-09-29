@@ -1,88 +1,136 @@
-﻿using BepInEx;
+using System.Collections.Generic;
+using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
-using SkillMultiplier.Configuration;
 using SkillMultiplier.Patches;
 
 namespace SkillMultiplier;
 
-[BepInPlugin(MyPluginInfo.PLUGIN_GUID, MyPluginInfo.PLUGIN_NAME, MyPluginInfo.PLUGIN_VERSION)]
-// ReSharper disable once ClassNeverInstantiated.Global
-public class SkillMultiplier : BaseUnityPlugin
+/// <summary>
+/// Applies the server's per-action XP multipliers inside the game client.
+/// <para>
+/// The server cannot reach these actions at all: their values are hardcoded in the client's
+/// <c>SkillManager</c> rather than read from the <c>globals</c> tables the server owns. So the server
+/// publishes a table and this plugin applies it where the numbers actually live.
+/// </para>
+/// <para>
+/// The apply point is a prefix on <c>EFT.Skill.OnTrigger</c>, which is the point of this version: the
+/// previous release patched <c>BaseSkill.OnTrigger</c>, one level too late, so the multiplied value never
+/// reached the skill's own progress accounting and the green "earned this raid" bar under-reported. See
+/// <see cref="SkillOnTriggerPatch"/>.
+/// </para>
+/// </summary>
+[BepInPlugin(Guid, "SkillMultiplier", "2.1.0")]
+public class Plugin : BaseUnityPlugin
 {
-    internal new static ManualLogSource Logger;
-    public static Config Configuration { get; private set; }
+    /// <summary>
+    /// The GUID has to stay the previous release's <c>dazzuh.skillmultiplier</c>. BepInEx keys a plugin's
+    /// identity, and the name of its config file, off this string rather than off the assembly name - so
+    /// changing it would orphan the existing <c>dazzuh.skillmultiplier.cfg</c>, which is both where a
+    /// user's old per-skill multipliers live and the thing this update has to read to migrate them.
+    /// </summary>
+    public const string Guid = "dazzuh.skillmultiplier";
 
-    // ReSharper disable once UnusedMember.Local
+    internal static Plugin Instance;
+
+    internal static ManualLogSource Log;
+
+    /// <summary>
+    /// Action object -> multiplier. Swapped whole rather than mutated, so the patch reads a consistent
+    /// snapshot on Unity's main thread while the websocket thread is replacing it. Never null.
+    /// </summary>
+    internal static volatile Dictionary<EFT.SkillManager.SkillAction, float> Multipliers = [];
+
+    /// <summary>
+    /// The global multiplier from the pushed table, applied on top of every per-action multiplier.
+    /// <para>
+    /// A plain float rather than part of the map because it is not per-action: it multiplies the gain for
+    /// every skill the <see cref="Patches.SkillOnTriggerPatch"/> prefix runs for, including ones with no
+    /// row set. Volatile for the same reason as <see cref="Multipliers"/> - written by the table thread,
+    /// read on Unity's main thread. Never null, 1.0 means off.
+    /// </para>
+    /// </summary>
+    internal static volatile float GlobalMultiplier = 1f;
+
+    internal static ConfigEntry<bool> Enabled;
+    internal static ConfigEntry<bool> Debug;
+
+    /// <summary>
+    /// Whether the previous release's multipliers have already been carried over. Persisted because the
+    /// alternative - re-deriving it from the old entries each launch - would re-add anything the user has
+    /// since set back to 1 on the page.
+    /// </summary>
+    internal static ConfigEntry<bool> CarriedLegacyConfig;
+
     private void Awake()
     {
-        Logger = base.Logger;
-        Configuration = new Config(Config);
+        Instance = this;
+        Log = base.Logger;
 
-        new MenuScreenPatch().Enable();
-        ApplyPatches();
-        SubscribeToConfigChanges();
-        Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
+        Enabled = Config.Bind("General", "Enabled", true, "Apply the multipliers the server pushes.");
+
+        CarriedLegacyConfig = Config.Bind(
+            "Migration",
+            "CarriedLegacyConfig",
+            false,
+            "Set once the multipliers from an older version of this mod have been carried over. Clear this "
+                + "to run that again."
+        );
+        Debug = Config.Bind(
+            "Debug",
+            "Verbose",
+            false,
+            "Log each multiplier as it is applied. The action catalog and the per-revision mapping count are "
+                + "always logged once, since that is what identifies a mis-targeted multiplier."
+        );
+
+        new SkillOnTriggerPatch().Enable();
+
+        // Installed once and always on; Plugin.FatigueDisabled is what actually switches the behaviour.
+        new SkillFatiguePatch().Enable();
+
+        TableClient.Start();
+        TableClient.StartHeartbeat();
+
+        Log.LogInfo($"{Guid} loaded.");
     }
 
-    private static void ApplyPatches()
+    /// <summary>
+    /// Whether the fatigue curve is currently floored. Read by <see cref="SkillFatiguePatch"/> on the
+    /// game's main thread, written from the websocket thread when the table arrives.
+    /// <para>
+    /// The patch itself is installed once, at startup, and this flag is the switch - deliberately not a
+    /// runtime <c>ModulePatch.Enable()</c>/<c>Disable()</c>. A Harmony detour is not a safe thing to add or
+    /// remove while the game's main thread may be inside that very method: doing so against a
+    /// debugger-paused process deadlocked the game outright, and the live-thread version of the same
+    /// mutation is the same hazard without the safety net. A bool read costs one load per XP event.
+    /// </para>
+    /// </summary>
+    internal static volatile bool FatigueDisabled;
+
+    /// <summary>Set or clear the fatigue floor. Called from the websocket thread as the table arrives.</summary>
+    internal static void SetFatigueDisabled(bool disabled)
     {
-        if (Configuration.Enable.Value)
+        if (disabled == FatigueDisabled)
         {
-            new SkillClassPatch().Enable();
+            return;
         }
-        else
-        {
-            new SkillClassPatch().Disable();
-        }
-        if (Configuration.DisableFatigue.Value && Configuration.Enable.Value)
-        {
-            new SkillClassFatiguePatch().Enable();
-        }
-        else
-        {
-            new SkillClassFatiguePatch().Disable();
-        }
+
+        FatigueDisabled = disabled;
+
+        Log.LogInfo(
+            disabled
+                ? "[SkillMultiplier] Skill fatigue disabled: XP gain no longer decays after "
+                    + "SkillFreshPoints + SkillPointsBeforeFatigue points in a session."
+                : "[SkillMultiplier] Skill fatigue restored to vanilla."
+        );
     }
 
-    private static void SubscribeToConfigChanges()
+    internal static void DebugLog(string message)
     {
-        Configuration.Enable.SettingChanged += (_, _) =>
+        if (Debug != null && Debug.Value)
         {
-            if (Configuration.Enable.Value)
-            {
-                new SkillClassPatch().Enable();
-                if (Configuration.DisableFatigue.Value)
-                {
-                    new SkillClassFatiguePatch().Enable();
-                }
-                else
-                {
-                    new SkillClassFatiguePatch().Disable();
-                }
-            }
-            else
-            {
-                new SkillClassPatch().Disable();
-                new SkillClassFatiguePatch().Disable();
-            }
-        };
-        Configuration.DisableFatigue.SettingChanged += (_, _) =>
-        {
-            if (Configuration.DisableFatigue.Value && Configuration.Enable.Value)
-            {
-                new SkillClassFatiguePatch().Enable();
-            }
-            else
-            {
-                new SkillClassFatiguePatch().Disable();
-            }
-        };
-    }
-    public static void LogDebug(string message)
-    {
-        if (Configuration.Debug.Value)
-        {
-            Logger.LogDebug(message);
+            Log.LogMessage(message);
         }
     }
 }
