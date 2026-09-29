@@ -1,18 +1,19 @@
 param(
-    [string]$SPTDir = 'S:\SPT-Dev\4.1',
+    [Parameter(Mandatory, HelpMessage = 'Path to the SPT install to deploy into (the folder holding EscapeFromTarkov.exe)')]
+    [string]$SPTDir,
     [string]$Configuration = 'Release'
 )
 
 $ErrorActionPreference = 'Stop'
 
-# The live, heavily modded install must never be a build or deploy target.
-if ($SPTDir -match 'SPT4\.1(?!\\)' -or $SPTDir -like '*\SPT4.1' -or $SPTDir -like '*\SPT4.1\*') {
-    throw "Refusing to deploy to a live install: $SPTDir"
-}
-
 $repo = Split-Path -Parent $PSScriptRoot
 $runtime = Join-Path $SPTDir 'SPT_Runtime'
 $mods = Join-Path $runtime 'user\mods'
+
+# Refuse a target that is not an SPT install at all, rather than scattering files into it.
+if (-not (Test-Path (Join-Path $SPTDir 'EscapeFromTarkov.exe')) -or -not (Test-Path $runtime)) {
+    throw "Does not look like an SPT install: $SPTDir (expected EscapeFromTarkov.exe and SPT_Runtime inside it)"
+}
 
 # A second install of this mod doubles every multiplier it applies: two server mods scaling the same globals,
 # and two plugins both prefixing Skill.OnTrigger. Refuse rather than ship a silent 2x or 4x.
