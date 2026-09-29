@@ -137,14 +137,14 @@ value is used by more than one skill, the row says so.
 ## Build
 
 ```
-pwsh tools/deploy.ps1              # build both halves and install into S:\SPT-Dev\4.1
+pwsh tools/deploy.ps1              # build both halves and install into your SPT install
 pwsh build-release.ps1             # package a release zip in release\
 ```
 
-`deploy.ps1` refuses to target the live install at `S:\SPT4.1`, refuses to run when a second copy of this
+`deploy.ps1` takes the SPT install as a parameter, refuses to run when a second copy of this
 mod is already installed, stops the server for you (it holds its own DLL), and never overwrites an existing
-`config.json`. `SPTDir` / `SPTRuntimeDir` are overridable properties; all game references are
-`Private=false`, and the deploy fails if any non-mod assembly lands in the build output.
+`config.json`. All game references are `Private=false`, and the deploy fails if any non-mod assembly lands
+in the build output.
 
 ## License
 
