@@ -163,7 +163,7 @@ internal static class ClientCatalogReporter
             _reportedSignature = signature;
             _reportedLegacy = legacy;
 
-            Plugin.Log.LogInfo(
+            Plugin.DebugLog(
                 $"[SkillMultiplier] Reported {actions.Count} tunable action(s) to the server "
                     + $"({events} XP event(s) observed so far)."
             );

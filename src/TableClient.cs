@@ -113,7 +113,7 @@ internal static class TableClient
                     throw new Exception("the websocket did not open");
                 }
 
-                Plugin.Log.LogInfo($"[SkillMultiplier] Connected to the server at {url}.");
+                Plugin.DebugLog($"[SkillMultiplier] Connected to the server at {url}.");
                 backoffSeconds = 5;
 
                 // The server may have restarted while this client kept running, taking the stored report with
@@ -302,7 +302,7 @@ internal static class TableClient
                 Plugin.DebugLog($"[SkillMultiplier] table: {key} = {value}");
             }
 
-            Plugin.Log.LogInfo(
+            Plugin.DebugLog(
                 $"[SkillMultiplier] Revision {_revision}: {map.Count} of {actions.Count} action multiplier(s) "
                     + "mapped to actions in this client."
             );

@@ -168,11 +168,11 @@ internal static class ActionCatalog
 
             if (lines.Count > 0)
             {
-                Plugin.Log.LogInfo($"[SkillMultiplier] {skill.Id} ({skillActions.Length} action(s)): {string.Join(", ", lines)}");
+                Plugin.DebugLog($"[SkillMultiplier] {skill.Id} ({skillActions.Length} action(s)): {string.Join(", ", lines)}");
             }
         }
 
-        Plugin.Log.LogInfo($"[SkillMultiplier] Client action catalog: {count} action(s) across all skills.");
+        Plugin.DebugLog($"[SkillMultiplier] Client action catalog: {count} action(s) across all skills.");
     }
 
     /// <summary>

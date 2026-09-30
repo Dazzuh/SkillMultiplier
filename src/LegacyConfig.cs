@@ -20,8 +20,9 @@ namespace SkillMultiplier;
 /// <para>
 /// Nothing here runs on its own. The page asks first - but only when there is something to ask about, which
 /// is what <see cref="HasLegacyConfig"/> reports into the catalog report - and the answer arrives in the
-/// pushed table, because the game is the only thing that can read its own file. The marker still makes each
-/// install act exactly once, whichever answer arrives.
+/// pushed table, because the game is the only thing that can read its own file. Each install acts exactly
+/// once: whichever answer arrives, the old values are then deleted from the file, so there is nothing left
+/// to ask about on the next launch and no marker to keep.
 /// </para>
 /// <para>
 /// It reproduces the old mod's arithmetic rather than its inputs. The old patch multiplied by
@@ -63,12 +64,19 @@ internal static class LegacyConfig
     private static bool? _hasLegacy;
 
     /// <summary>
+    /// Whether this session has already answered the migration question, by migrating or by declining.
+    /// Answering deletes the old values from the file, so the next launch detects nothing - this only stops
+    /// the question coming back for the rest of this session.
+    /// </summary>
+    private static bool _acted;
+
+    /// <summary>
     /// Whether there is anything to ask about. Reported to the server with the action catalog, so the page
     /// can offer the migration question - and only then.
     /// </summary>
     internal static bool HasLegacyConfig()
     {
-        if (Plugin.CarriedLegacyConfig != null && Plugin.CarriedLegacyConfig.Value)
+        if (_acted)
         {
             return false;
         }
@@ -108,9 +116,7 @@ internal static class LegacyConfig
     /// </summary>
     internal static void Tick(SkillManager manager)
     {
-        var marker = Plugin.CarriedLegacyConfig;
-
-        if (manager == null || marker == null || marker.Value)
+        if (manager == null || _acted)
         {
             return;
         }
@@ -118,10 +124,9 @@ internal static class LegacyConfig
         switch (TableClient.LegacyRequest)
         {
             case "decline":
-                // Asked and answered: the old entries stay in the file, inert - nothing reads them any more -
-                // and the marker stops the question coming back.
-                marker.Value = true;
-                Plugin.Log.LogInfo("[SkillMultiplier] Leaving the previous release's multipliers unmigrated, as asked.");
+                // Asked and answered: the old entries are deleted, so the question never comes back.
+                MarkActed();
+                Plugin.DebugLog("[SkillMultiplier] Leaving the previous release's multipliers unmigrated, as asked.");
                 break;
 
             case "migrate":
@@ -136,13 +141,11 @@ internal static class LegacyConfig
 
     /// <summary>
     /// Runs on a tick that already has a <see cref="SkillManager"/>, and only until it succeeds or finds
-    /// nothing to do - the marker in the config then stops it re-reading the file on every tick.
+    /// nothing to do - answering deletes the old values, which stops it re-reading the file on every tick.
     /// </summary>
     internal static void RunMigration(SkillManager manager)
     {
-        var marker = Plugin.CarriedLegacyConfig;
-
-        if (manager == null || marker == null || marker.Value)
+        if (manager == null || _acted)
         {
             return;
         }
@@ -171,7 +174,7 @@ internal static class LegacyConfig
         if (perSkill.Count == 0 && Math.Abs(global - 1.0) < 1e-9)
         {
             // Nothing to carry from this install.
-            marker.Value = true;
+            MarkActed();
             return;
         }
 
@@ -226,7 +229,7 @@ internal static class LegacyConfig
 
             if (carried == 0)
             {
-                marker.Value = true;
+                MarkActed();
                 return;
             }
 
@@ -244,9 +247,9 @@ internal static class LegacyConfig
                 )
             );
 
-            marker.Value = true;
+            MarkActed();
 
-            Plugin.Log.LogInfo(
+            Plugin.DebugLog(
                 $"[SkillMultiplier] Carried the old config over: {carried} action(s), from {perSkill.Count} "
                     + $"skill(s) with a value of their own and a global multiplier of {global}. They are on the "
                     + "page now, and editable there."
@@ -258,6 +261,94 @@ internal static class LegacyConfig
             // the server answers.
             Plugin.Log.LogWarning($"[SkillMultiplier] Could not carry the old config over yet: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Answer once: latch the session flag, forget any cached detection, and delete the old values from
+    /// the file so the next launch detects nothing. Runs after a migrate, a decline, or finding nothing to
+    /// carry - all three mean the question must never come back.
+    /// </summary>
+    private static void MarkActed()
+    {
+        _acted = true;
+        _hasLegacy = false;
+        ClearLegacyEntries();
+    }
+
+    /// <summary>
+    /// Delete the previous release's values from this plugin's own config file: the whole
+    /// <c>[Multipliers]</c> section and the <c>Global Multiplier</c> line under <c>[General]</c>. Everything
+    /// else in the file is left alone, comments included.
+    /// <para>
+    /// The old entries are bound by nothing, so BepInEx holds them as orphans: editing the disk alone would
+    /// let a later in-memory save write them straight back, which is why the config is reloaded afterwards.
+    /// Reloading only re-reads what is on disk - every live entry keeps its value.
+    /// </para>
+    /// </summary>
+    private static void ClearLegacyEntries()
+    {
+        var config = Plugin.Instance != null ? Plugin.Instance.Config : null;
+
+        if (config == null)
+        {
+            return;
+        }
+
+        var path = config.ConfigFilePath;
+
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        var kept = new List<string>();
+        var section = string.Empty;
+        var changed = false;
+
+        foreach (var line in File.ReadAllLines(path))
+        {
+            var trimmed = line.Trim();
+
+            if (trimmed.StartsWith("["))
+            {
+                section = trimmed;
+                if (trimmed == $"[{LegacySection}]")
+                {
+                    changed = true;
+                    continue;
+                }
+                kept.Add(line);
+                continue;
+            }
+
+            if (section == $"[{LegacySection}]")
+            {
+                changed = true;
+                continue;
+            }
+
+            if (section == $"[{GlobalSection}]")
+            {
+                var separator = trimmed.IndexOf('=');
+
+                if (separator > 0
+                    && trimmed.Substring(0, separator).Trim() == GlobalKey)
+                {
+                    changed = true;
+                    continue;
+                }
+            }
+
+            kept.Add(line);
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        File.WriteAllLines(path, kept);
+        config.Reload();
     }
 
     /// <summary>

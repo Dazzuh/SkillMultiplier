@@ -55,13 +55,6 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<bool> Enabled;
     internal static ConfigEntry<bool> Debug;
 
-    /// <summary>
-    /// Whether the previous release's multipliers have already been carried over. Persisted because the
-    /// alternative - re-deriving it from the old entries each launch - would re-add anything the user has
-    /// since set back to 1 on the page.
-    /// </summary>
-    internal static ConfigEntry<bool> CarriedLegacyConfig;
-
     private void Awake()
     {
         Instance = this;
@@ -69,19 +62,12 @@ public class Plugin : BaseUnityPlugin
 
         Enabled = Config.Bind("General", "Enabled", true, "Apply the multipliers the server pushes.");
 
-        CarriedLegacyConfig = Config.Bind(
-            "Migration",
-            "CarriedLegacyConfig",
-            false,
-            "Set once the multipliers from an older version of this mod have been carried over. Clear this "
-                + "to run that again."
-        );
         Debug = Config.Bind(
             "Debug",
             "Verbose",
             false,
-            "Log each multiplier as it is applied. The action catalog and the per-revision mapping count are "
-                + "always logged once, since that is what identifies a mis-targeted multiplier."
+            "Log each multiplier as it is applied, plus the action catalog, the per-revision mapping "
+                + "count and the connection state. Off means only warnings and errors reach the log."
         );
 
         new SkillOnTriggerPatch().Enable();
@@ -92,7 +78,7 @@ public class Plugin : BaseUnityPlugin
         TableClient.Start();
         TableClient.StartHeartbeat();
 
-        Log.LogInfo($"{Guid} loaded.");
+        DebugLog($"{Guid} loaded.");
     }
 
     /// <summary>
@@ -118,7 +104,7 @@ public class Plugin : BaseUnityPlugin
 
         FatigueDisabled = disabled;
 
-        Log.LogInfo(
+        DebugLog(
             disabled
                 ? "[SkillMultiplier] Skill fatigue disabled: XP gain no longer decays after "
                     + "SkillFreshPoints + SkillPointsBeforeFatigue points in a session."
