@@ -82,6 +82,16 @@ public class Plugin : BaseUnityPlugin
     }
 
     /// <summary>
+    /// Unity calls this on quit. The socket is closed and both background loops are told to stop, so none
+    /// of them outlive the quit - see <see cref="TableClient.Shutdown"/>. Kept tiny on purpose: this runs on
+    /// the game's main thread mid-shutdown, and anything slow here reads as a hang of its own.
+    /// </summary>
+    private void OnDestroy()
+    {
+        TableClient.Shutdown();
+    }
+
+    /// <summary>
     /// Whether the fatigue curve is currently floored. Read by <see cref="SkillFatiguePatch"/> on the
     /// game's main thread, written from the websocket thread when the table arrives.
     /// <para>

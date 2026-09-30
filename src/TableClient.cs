@@ -30,6 +30,17 @@ internal static class TableClient
 
     private static readonly object Gate = new();
 
+    /// <summary>
+    /// Set once, from <see cref="Plugin.OnDestroy"/>, when the game is quitting. Both loops below check it:
+    /// without this the socket is never closed and the reconnect loop never exits, which keeps the process
+    /// alive after "quit game" - background threads die with the process, but an open socket held by the
+    /// library's own threads does not let it get there.
+    /// </summary>
+    internal static volatile bool Quitting;
+
+    /// <summary>The live socket, so shutdown can close it. Only touched under <see cref="Gate"/>.</summary>
+    private static WebSocketSharp.WebSocket _socket;
+
     /// <summary>The table's actions, as pushed. Kept so the map can be rebuilt once the profile loads.</summary>
     private static Dictionary<string, float> _actions = [];
 
@@ -91,11 +102,15 @@ internal static class TableClient
         _socketUrl = url;
         var backoffSeconds = 5;
 
-        while (true)
+        while (!Quitting)
         {
             try
             {
                 using var socket = new WebSocketSharp.WebSocket(url);
+                lock (Gate)
+                {
+                    _socket = socket;
+                }
                 socket.SslConfiguration.ServerCertificateValidationCallback = (_, _, _, _) => true;
                 socket.OnMessage += (_, e) =>
                 {
@@ -121,20 +136,57 @@ internal static class TableClient
                 ClientCatalogReporter.RequestReport();
 
                 // Hold the connection; the library pumps messages on its own thread.
-                while (socket.IsAlive)
+                while (!Quitting && socket.IsAlive)
                 {
                     Thread.Sleep(1000);
+                }
+
+                lock (Gate)
+                {
+                    if (ReferenceEquals(_socket, socket))
+                    {
+                        _socket = null;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning(
-                    $"[SkillMultiplier] Websocket unavailable ({ex.Message}); retrying in {backoffSeconds}s."
-                );
+                if (!Quitting)
+                {
+                    Plugin.Log.LogWarning(
+                        $"[SkillMultiplier] Websocket unavailable ({ex.Message}); retrying in {backoffSeconds}s."
+                    );
+                }
             }
 
-            Thread.Sleep(backoffSeconds * 1000);
-            backoffSeconds = Math.Min(backoffSeconds * 2, 60);
+            if (!Quitting)
+            {
+                Thread.Sleep(backoffSeconds * 1000);
+                backoffSeconds = Math.Min(backoffSeconds * 2, 60);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Close the live socket and stop both loops. Called from <see cref="Plugin.OnDestroy"/> on the game's
+    /// main thread while quitting. Closing unblocks the hold loop and the flag stops the reconnect loop, so
+    /// neither outlives the quit.
+    /// </summary>
+    internal static void Shutdown()
+    {
+        Quitting = true;
+
+        try
+        {
+            lock (Gate)
+            {
+                _socket?.Close();
+                _socket = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[SkillMultiplier] Could not close the websocket on quit: {ex.Message}");
         }
     }
 
@@ -317,7 +369,7 @@ internal static class TableClient
     {
         var thread = new Thread(() =>
         {
-            while (true)
+            while (!TableClient.Quitting)
             {
                 Thread.Sleep(5000);
 
