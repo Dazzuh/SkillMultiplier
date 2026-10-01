@@ -87,6 +87,13 @@ public sealed record ClientActionEntry
     public double ObservedXp { get; set; }
 
     public int ObservedCount { get; set; }
+
+    /// <summary>
+    /// Whether the client's own game refuses to progress this skill locally. True means the client's progress
+    /// path never runs for the skill, so no client-side multiplier - per-row or global - can reach it, and its
+    /// server rows are the only lever. The client reads this off the running skill rather than from a list.
+    /// </summary>
+    public bool ServerAuthoritative { get; set; }
 }
 
 /// <summary>Request body of <c>/skillmultiplier/api/clientcatalog</c>.</summary>
@@ -170,7 +177,7 @@ public sealed record CatalogAction
 
     /// <summary>
     /// A server-side row that duplicates client-side rows for the same skill, hidden under Advanced config
-    /// by the UI. Set where the row is built - see <see cref="SkillMultiplierRouterCallback.ServerOwned"/>.
+    /// by the UI. Set where the row is built, from the per-request server-owned set.
     /// </summary>
     public bool Advanced { get; set; }
 
@@ -201,7 +208,7 @@ public sealed record CatalogGroup
     /// <summary>
     /// Whether the page's global multiplier reaches this skill. False for the server-owned skills, whose
     /// override never runs the client's patch point - the UI's math column must not compound a global
-    /// that the game will never apply. Set where the group is built, beside <see cref="SkillMultiplierRouterCallback.ServerOwned"/>.
+    /// that the game will never apply. Set where the group is built, from the per-request server-owned set.
     /// </summary>
     public bool GlobalApplies { get; set; } = true;
 
@@ -277,8 +284,21 @@ public sealed class SkillMultiplierRouterCallback(
     SkillMultiplierWsHandler wsHandler
 )
 {
-    /// <summary>Client-side action keys are <c>SkillId[index]</c>. Shape only - see the note in Save.</summary>
-    private static readonly Regex ActionKeyPattern = new(@"^[A-Za-z]+\[\d+\]$", RegexOptions.Compiled);
+    /// <summary>
+    /// Client-side action keys are <c>SkillId[index]</c>, plus <c>SkillId[Workout]</c> for the hideout gym.
+    /// Shape only - see the note in Save.
+    /// <para>
+    /// The gym gets its own key because it is not an action: the server pays it (see
+    /// <c>HideoutController.ApplyWorkoutSkillGain</c>), so there is no index and no client-side action to
+    /// match. The grant patch still finds it, because that lookup scans these keys by skill name rather
+    /// than by action identity - which is why the key belongs in this space and not in the catalog, where
+    /// every row has to name a globals field it reads and writes.
+    /// </para>
+    /// </summary>
+    private static readonly Regex ActionKeyPattern = new(
+        @"^[A-Za-z]+\[(\d+|Workout)\]$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
 
     /// <summary>
     /// Shown on a skill that is scaled from both halves. Not a prohibition: the two mechanisms are
@@ -289,22 +309,67 @@ public sealed class SkillMultiplierRouterCallback(
         + "multiply together: 2.00 on each gives 4.00 in game, not 2.00.";
 
     /// <summary>
-    /// Skills the client never applies multipliers to. Their <c>OnTrigger</c> is a
-    /// <c>ClientAuthorizedSkill</c> override that logs and returns without calling base, so the client's
-    /// <c>Skill.OnTrigger</c> prefix - per-row and global alike - never runs for them. Their server rows
-    /// are therefore the only lever, not a duplicate, and stay in the main list; the both-halves note
-    /// would be a lie for them, so it is withheld too. Mirrors the client's own ownership rule.
+    /// The skills the hideout gym pays into: one per successful repetition, drawn at random. Observed in
+    /// game rather than read from a table, because the reward table lives in the client and no client sends
+    /// it - the server is handed the rewards per repetition and picks from them.
     /// </summary>
-    private static readonly HashSet<string> ServerOwned = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> WorkoutSkills = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Crafting",
-        "HideoutManagement",
+        "Strength",
+        "Endurance",
     };
 
+    /// <summary>
+    /// Adds the gym's row for a skill.
+    /// <para>
+    /// Listed from the config rather than from a client report, because the gym is not an action: the server
+    /// pays it (see <c>HideoutController.ApplyWorkoutSkillGain</c>), so there is no action for the client to
+    /// report and the row would otherwise be settable only by hand-editing the file.
+    /// </para>
+    /// <para>
+    /// It carries no base on purpose: the amount comes out of the hideout's own reward table, which is neither
+    /// a globals field nor something the client measures, so there is no vanilla figure to show.
+    /// </para>
+    /// </summary>
+    private void AppendWorkoutRow(CatalogGroup group)
+    {
+        var key = group.Skill + "[Workout]";
+
+        if (group.Actions.Any(a => a.Key.Equals(key, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        group.Actions.Add(new CatalogAction
+        {
+            Key = key,
+            Label = "Workout (hideout gym)",
+            Base = 0,
+            BaseSource = null,
+            Multiplier = ResolveActionMultiplier(key),
+            Advanced = false,
+            Description =
+                "XP for a successful repetition on the hideout gym. The server pays it, and picks strength or "
+                + "endurance at random for each repetition, so this row applies to whichever it picks. Muscle "
+                + "pain halves the payout while it lasts.",
+        });
+    }
+
+    /// <summary>
+    /// Skills the client never applies multipliers to, so their server rows are the only lever rather than a
+    /// duplicate of rows that do nothing. The reason belongs to the game: a <c>ClientAuthorizedSkill</c>
+    /// overrides <c>OnTrigger</c> to log and return without calling base, which puts the client's entire
+    /// progress path - this mod's prefix and the global multiplier with it - out of reach for that skill.
+    /// Read from the running game via what clients report, so a mod that builds a skill the same way is
+    /// covered without being named. See <see cref="SkillMultiplierMod.ServerOwnedSkills"/>.
+    /// </summary>
     public ValueTask<string> GetCatalog(string url, MongoId sessionId, CancellationToken cancellationToken)
     {
         var groups = new List<CatalogGroup>();
         var reported = mod.ClientActions;
+
+        // Which skills the client cannot apply anything to, for this request.
+        var serverOwned = mod.ServerOwnedSkills();
 
         // The skills the server is actually scaling: the catalog entries that currently hold a multiplier,
         // mapped to their skill through the catalog rather than by parsing the key. A catalog key is
@@ -321,13 +386,13 @@ public sealed class SkillMultiplierRouterCallback(
                 Skill = skill,
                 DisplayName = mod.SkillDisplayName(skill),
                 Description = mod.SkillDescription(skill),
-                GlobalApplies = !ServerOwned.Contains(skill),
+                GlobalApplies = !serverOwned.Contains(skill),
                 Summary = Catalog.SkillSummaries.TryGetValue(skill, out var summary) ? summary : string.Empty,
             };
 
             // A server row duplicates the client's rows when the client reports actions for the same skill -
             // except for the server-owned skills, whose client rows the client never applies. Those stay.
-            var duplicated = !ServerOwned.Contains(skill)
+            var duplicated = !serverOwned.Contains(skill)
                 && reported.Values.Any(a => a.Skill.Equals(skill, StringComparison.OrdinalIgnoreCase));
 
             foreach (var entry in Catalog.All.Where(e => e.Skill == skill))
@@ -344,7 +409,12 @@ public sealed class SkillMultiplierRouterCallback(
                 });
             }
 
-            AppendClientActions(group, reported, scaledByServer);
+            if (WorkoutSkills.Contains(skill))
+            {
+                AppendWorkoutRow(group);
+            }
+
+            AppendClientActions(group, reported, scaledByServer, serverOwned);
 
             if (group.Actions.Count > 0)
             {
@@ -367,11 +437,11 @@ public sealed class SkillMultiplierRouterCallback(
                 Skill = skill,
                 DisplayName = mod.SkillDisplayName(skill),
                 Description = mod.SkillDescription(skill),
-                GlobalApplies = !ServerOwned.Contains(skill),
+                GlobalApplies = !serverOwned.Contains(skill),
                 Summary = "Not in the server's globals - these actions exist only inside the game client.",
             };
 
-            AppendClientActions(group, reported, scaledByServer);
+            AppendClientActions(group, reported, scaledByServer, serverOwned);
 
             if (group.Actions.Count > 0)
             {
@@ -463,7 +533,8 @@ public sealed class SkillMultiplierRouterCallback(
     private void AppendClientActions(
         CatalogGroup group,
         IReadOnlyDictionary<string, ClientActionEntry> reported,
-        HashSet<string> scaledByServer)
+        HashSet<string> scaledByServer,
+        HashSet<string> serverOwned)
     {
         var mine = reported
             .Values.Where(a => a.Skill.Equals(group.Skill, StringComparison.OrdinalIgnoreCase))
@@ -505,7 +576,7 @@ public sealed class SkillMultiplierRouterCallback(
         }
 
         if (scaledByServer.Contains(group.Skill)
-            && !ServerOwned.Contains(group.Skill)
+            && !serverOwned.Contains(group.Skill)
             && mine.Any(a => Tuned(ResolveActionMultiplier(a.Key))))
         {
             group.Summary = string.IsNullOrEmpty(group.Summary)
@@ -748,6 +819,13 @@ public sealed class SkillMultiplierRouterCallback(
         if (unknown.Count > 0)
         {
             message += $" Ignored {unknown.Count} unknown key(s).";
+        }
+
+        // Reported, not just logged: a key dropped for its shape is a setting the user made that will not
+        // apply, and the message is the only place they would ever find that out.
+        if (badActionKeys > 0)
+        {
+            message += $" Ignored {badActionKeys} unrecognised action key(s).";
         }
 
         // Only the globals half is read at client startup. Saying "restart the game" unconditionally was

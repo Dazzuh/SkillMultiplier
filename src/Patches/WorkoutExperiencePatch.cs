@@ -1,0 +1,61 @@
+using System;
+using System.Reflection;
+using EFT.Hideout;
+using SPT.Reflection.Patching;
+
+namespace SkillMultiplier.Patches;
+
+/// <summary>
+/// Marks the method the hideout gym pays XP from, so <see cref="WorkoutPayoutPatch"/> knows a workout is
+/// running.
+/// <para>
+/// The gym cannot be reached the way every other source is. <c>WorkoutBehaviour.CalculateExperience</c>
+/// works out the payout itself and then calls <c>Skill.SetCurrent</c> directly, never going through
+/// <c>Skill.OnTrigger</c> - which is the one place <see cref="SkillOnTriggerPatch"/> multiplies. So the
+/// workout needs its own hook, and this flag is what keeps it to the workout: the payout patches do
+/// nothing unless this is set.
+/// </para>
+/// <para>
+/// This method has exactly one caller, inside the workout itself, so the flag cannot be set by anything
+/// else.
+/// </para>
+/// </summary>
+internal class WorkoutExperiencePatch : ModulePatch
+{
+    /// <summary>
+    /// The key index a workout's XP is scaled by, alongside the skill it pays. Not a position in any action
+    /// array - a workout is not an action - so the table spells it <c>Strength[Workout]</c>.
+    /// </summary>
+    internal const int WorkoutIndex = -1;
+
+    [ThreadStatic]
+    private static bool _inWorkout;
+
+    /// <summary>True only while the game is inside a workout's payout, on this thread.</summary>
+    internal static bool InWorkout => _inWorkout;
+
+    protected override MethodBase GetTargetMethod()
+    {
+        return typeof(WorkoutBehaviour).GetMethod(
+            "CalculateExperience",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+        );
+    }
+
+    [PatchPrefix]
+    private static void Prefix()
+    {
+        _inWorkout = true;
+    }
+
+    /// <summary>
+    /// Cleared in a finalizer rather than a postfix: the method returns early when a workout produced no
+    /// reward at all, and a postfix would leave the flag set for whatever runs next on this thread. A
+    /// thread-static field keeps that from reaching another thread in the meantime.
+    /// </summary>
+    [PatchFinalizer]
+    private static void Finalizer()
+    {
+        _inWorkout = false;
+    }
+}

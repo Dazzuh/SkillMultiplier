@@ -20,7 +20,7 @@ namespace SkillMultiplier;
 /// <see cref="SkillOnTriggerPatch"/>.
 /// </para>
 /// </summary>
-[BepInPlugin(Guid, "SkillMultiplier", "2.1.0")]
+[BepInPlugin(Guid, "SkillMultiplier", "2.1.1")]
 public class Plugin : BaseUnityPlugin
 {
     /// <summary>
@@ -36,10 +36,14 @@ public class Plugin : BaseUnityPlugin
     internal static ManualLogSource Log;
 
     /// <summary>
-    /// Action object -> multiplier. Swapped whole rather than mutated, so the patch reads a consistent
-    /// snapshot on Unity's main thread while the websocket thread is replacing it. Never null.
+    /// The multipliers the patch applies, keyed by skill and the action's position in that skill's action
+    /// array - not by the action object. A raid builds its own <c>SkillManager</c> and its own action
+    /// objects, so an instance-keyed map silently stops matching the moment play starts; the skill id and
+    /// the index survive that, and they are the same two things the table's keys are written from.
+    /// Volatile for the same reason as <see cref="GlobalMultiplier"/> - written by the table thread,
+    /// read on the game's main thread.
     /// </summary>
-    internal static volatile Dictionary<EFT.SkillManager.SkillAction, float> Multipliers = [];
+    internal static volatile Dictionary<(EFT.ESkillId Skill, int Index), float> Multipliers = [];
 
     /// <summary>
     /// The global multiplier from the pushed table, applied on top of every per-action multiplier.
@@ -71,6 +75,15 @@ public class Plugin : BaseUnityPlugin
         );
 
         new SkillOnTriggerPatch().Enable();
+
+        // The hideout gym's payout is scaled where the game computes it: CalculateExperience reads
+        // Skills.SkillProgress.Factor(...).FactorValue once and uses that same number for its popup, the skill
+        // and the workout's points. Three patches put the multiplier into it - one marks a workout as running,
+        // one remembers which skill it is paying, one scales the figure - so all three agree with each other
+        // and with what the server pays for the same repetition.
+        new WorkoutExperiencePatch().Enable();
+        new WorkoutSkillMemoryPatch().Enable();
+        new WorkoutPayoutPatch().Enable();
 
         // Installed once and always on; Plugin.FatigueDisabled is what actually switches the behaviour.
         new SkillFatiguePatch().Enable();

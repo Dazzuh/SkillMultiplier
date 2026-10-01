@@ -101,15 +101,16 @@ internal static class ActionCatalog
     }
 
     /// <summary>
-    /// Build the action-to-multiplier map the patch reads. Keys the client does not know about are ignored,
+    /// Build the action-to-multiplier map the patch reads, keyed by skill and action index rather than by
+    /// action object - see <see cref="Plugin.Multipliers"/>. Keys the client does not know about are ignored,
     /// so a stale table cannot break anything; keys with no matching action simply never fire.
     /// </summary>
-    internal static Dictionary<SkillManager.SkillAction, float> BuildMap(
+    internal static Dictionary<(EFT.ESkillId Skill, int Index), float> BuildMap(
         SkillManager manager,
         IDictionary<string, float> actions
     )
     {
-        var map = new Dictionary<SkillManager.SkillAction, float>();
+        var map = new Dictionary<(EFT.ESkillId, int), float>();
 
         if (manager == null || actions == null || actions.Count == 0)
         {
@@ -136,8 +137,26 @@ internal static class ActionCatalog
 
                 if (actions.TryGetValue($"{skill.Id}[{index}]", out var multiplier) && multiplier != 1f)
                 {
-                    map[action] = multiplier;
+                    map[(skill.Id, index)] = multiplier;
                 }
+            }
+        }
+
+        // The gym is not an action, so walking a skill's action array can never find it. The table names it
+        // as <Skill>[Workout]; take those by name, so a workout keeps its own row rather than following
+        // whatever else that skill does.
+        foreach (var (key, multiplier) in actions)
+        {
+            if (multiplier == 1f || key == null || !key.EndsWith("[Workout]", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var open = key.IndexOf('[');
+
+            if (open > 0 && Enum.TryParse<ESkillId>(key.Substring(0, open), out var workoutSkill))
+            {
+                map[(workoutSkill, SkillMultiplier.Patches.WorkoutExperiencePatch.WorkoutIndex)] = multiplier;
             }
         }
 
@@ -200,9 +219,12 @@ internal static class ActionCatalog
                 continue;
             }
 
+            // Read once per skill: it is a property of the skill, not of each action it holds.
+            var serverAuthoritative = IsServerAuthoritative(skill);
+
             for (var index = 0; index < skillActions.Length; index++)
             {
-                var stats = observed.TryGetValue(skillActions[index], out var found) ? found : default;
+                var stats = observed.TryGetValue((skill.Id, index), out var found) ? found : default;
 
                 described.Add(new ClientActionInfo
                 {
@@ -213,12 +235,25 @@ internal static class ActionCatalog
                     Factor = ReadFactorValue(skillActions[index]) ?? 0d,
                     ObservedXp = stats.Max,
                     ObservedCount = stats.Count,
+                    ServerAuthoritative = serverAuthoritative,
                 });
             }
         }
 
         return described;
     }
+
+    /// <summary>
+    /// Whether the game itself refuses to progress this skill from the client.
+    /// <para>
+    /// <c>ClientAuthorizedSkill.OnTrigger</c> is a one-line override that logs "can not be progressed
+    /// locally" and returns, so it never calls <c>Skill.OnTrigger</c> - which is where this mod patches. No
+    /// client-side multiplier, per-row or global, can reach such a skill. Asked of the running skill rather
+    /// than answered from a list of names, so a mod that builds a skill the same way gets the same treatment
+    /// without being named here.
+    /// </para>
+    /// </summary>
+    private static bool IsServerAuthoritative(BaseSkill skill) => skill is ClientAuthorizedSkill;
 
     private static string ReadFactor(SkillManager.SkillAction action) =>
         ReadFactorValue(action)?.ToString() ?? "?";

@@ -14,7 +14,7 @@
         <Nullable>enable</Nullable>
         <OutputType>Library</OutputType>
         <ModAuthor>Dazzuh</ModAuthor>
-        <Version>2.1.0</Version>
+        <Version>2.1.1</Version>
         <OutputPath>bin\$(Configuration)\$(ProjectName)\$(AssemblyName)\</OutputPath>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     </PropertyGroup>
@@ -36,6 +36,12 @@
         </Reference>
         <Reference Include="SPTarkov.Server.Web">
             <HintPath>$(SPTRuntimeDir)\SPTarkov.Server.Web.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <!-- AbstractPatch + [PatchPrefix]/[PatchPostfix]: the server's own patching idiom, and the only way
+             to reach XP the server grants itself, which never passes through the client's OnTrigger. -->
+        <Reference Include="SPTarkov.Reflection">
+            <HintPath>$(SPTRuntimeDir)\SPTarkov.Reflection.dll</HintPath>
             <Private>false</Private>
         </Reference>
         <Reference Include="SemanticVersioning">

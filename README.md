@@ -32,12 +32,30 @@ will do before you touch it. `Reset all` puts everything back to vanilla without
 The slider covers the range people actually tune. To go past it, type into the box beside it: the slider
 goes to 10x, the box accepts up to 1000x and the slider simply shows full above its own travel.
 
-## Skills only partly tunable, and why
+Rows come in two kinds, and they apply at different moments. A row named after the game's own config
+(`Settings.<Skill>.<Field>`) is a value the server hands the game, so it takes effect when the game next
+loads that - relaunch the client after changing one. A row keyed by skill and action (`Endurance[0]`) is
+applied by the client plugin as each event happens, so it lands immediately. Setting both for the same
+action compounds them rather than adding, because they are two separate knobs.
 
-Some of Tarkov's per-action XP is hardcoded in the game client and never appears in the server's config at
-all - the XP for finding unique loot, the armour-wear XP for light and heavy vests, and the sniper kill
-action. Those are tunable here **because of the client plugin**, which is the only thing that can reach
-them. They appear in the same list, keyed by the skill they belong to.
+## Where the XP comes from, and why this needs two halves
+
+Most per-action XP is worked out by the game client and lands through one path, which the client plugin
+scales. Three of those are hardcoded in the client and never appear in the server's config at all - the XP
+for finding unique loot, the armour-wear XP for light and heavy vests, and the sniper kill action - so the
+plugin is the only thing that can reach them. They appear in the same list, keyed by the skill they belong
+to.
+
+The rest the client cannot pay at all. Tarkov marks Crafting, Hideout Management and Weapon Treatment as
+skills the client is not allowed to progress, and repairs are paid by the server outright: an armour kit
+pays the vest skills according to the armour's type, a weapon repair pays Weapon Treatment, and a trader
+repair pays Charisma. None of that passes through the client's skill code, so any client-side patch leaves
+it untouched - those rows are scaled on the server, at the moment it hands the points over. Same list, same
+keys.
+
+The hideout gym is paid the same way, but not for an action: it draws strength or endurance at random for each
+successful repetition. It therefore gets a row under each skill it can pay - `Strength[Workout]` and
+`Endurance[Workout]` - and the in-game popup for a repetition reports what you actually earned.
 
 `FieldMedicine`, `FirstAid`, `RecoilControl`, `WeaponModding`, `AdvancedModding`, `NightOps`, `SilentOps`
 and `Lockpicking` have no XP action of their own in base 4.1, so there is nothing to scale - unless another

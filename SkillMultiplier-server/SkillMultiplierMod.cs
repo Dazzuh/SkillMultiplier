@@ -3,8 +3,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
+using SPTarkov.Reflection.Patching;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers.Server;
+using SPTarkov.Server.Core.Models.Enums;
 using SPTarkov.Server.Core.Models.Spt.Tables;
 using SPTarkov.Server.Core.Services.Locales;
 
@@ -100,6 +102,143 @@ public sealed class SkillMultiplierMod(
     /// tooltips. Null when it has none.
     /// </summary>
     public string? SkillDescription(string skillId) => LocaleValue(skillId + "Description");
+
+    /// <summary>
+    /// The base game's skills whose XP the client cannot progress, so nothing client-side can scale them. A
+    /// <c>ClientAuthorizedSkill</c> overrides <c>OnTrigger</c> to log and return without calling base. These
+    /// cannot be discovered without asking, hence listed - see <see cref="ServerOwnedSkills"/> for the rest.
+    /// </summary>
+    private static readonly HashSet<string> ServerOwnedNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Crafting",
+        "HideoutManagement",
+        "WeaponTreatment",
+    };
+
+    /// <summary>
+    /// Skills a connected client has reported as ones its own game refuses to progress locally. Kept as the
+    /// union across sessions rather than per session: the question is whether the client can apply anything to
+    /// the skill at all, and one install that cannot is enough to say its rows are not a duplicate.
+    /// </summary>
+    private readonly HashSet<string> _clientUnauthorized = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Every skill the client cannot apply a multiplier to: the names known without asking, plus whatever
+    /// connected clients have reported. Read by the catalog build and by the repair patch.
+    /// </summary>
+    public HashSet<string> ServerOwnedSkills()
+    {
+        lock (_gate)
+        {
+            return new HashSet<string>(
+                ServerOwnedNames.Concat(_clientUnauthorized),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+    }
+
+    /// <summary>
+    /// The multiplier that applies to skill XP the server grants itself, which today is the repair path.
+    /// <para>
+    /// Resolved from the skill's own row, because that is the number a user set: the single value configured
+    /// for that skill, whether it lives in the client's key space (<c>LightVests[0]</c>) or in the server's
+    /// (<c>Settings.WeaponTreatment.SkillPointsPerRepair</c>). The global multiplier rides on top for a skill
+    /// the client can scale, which is exactly what the page's math column shows for that row, and stays out
+    /// for a server-owned skill, which is the same rule the page uses.
+    /// </para>
+    /// <para>
+    /// Null when the skill has no row set, when its rows disagree, or when a row of its own still scales a
+    /// globals value - in that last case the server derives the XP from a number this mod has already scaled,
+    /// and multiplying the grant too would square it. Two different numbers for one skill mean there is no
+    /// single answer, and picking one of them - the first, the largest, their product - would be a guess the
+    /// page cannot show the user. Either way the grant is left at vanilla, and says so once in the log.
+    /// </para>
+    /// </summary>
+    public double? ServerGrantMultiplier(SkillTypes skill)
+    {
+        var skillId = skill.ToString();
+        var values = new HashSet<double>();
+
+        lock (_gate)
+        {
+            if (!Config.Enabled)
+            {
+                return 1.0;
+            }
+
+            foreach (var (key, value) in Config.Actions)
+            {
+                if (key.StartsWith(skillId + "[", StringComparison.OrdinalIgnoreCase))
+                {
+                    values.Add(value);
+                }
+            }
+
+            var coveredByValueScaling = false;
+
+            foreach (var entry in Catalog.All)
+            {
+                if (!entry.Skill.Equals(skillId, StringComparison.OrdinalIgnoreCase)
+                    || !Config.Multipliers.TryGetValue(entry.Key, out var value))
+                {
+                    continue;
+                }
+
+                values.Add(value);
+
+                // A row still scaling a globals value means the server computes this skill's XP from a number
+                // this mod has already scaled. Multiplying the grant as well would square it.
+                if (!entry.AppliedAtServerGrant)
+                {
+                    coveredByValueScaling = true;
+                }
+            }
+
+            if (coveredByValueScaling)
+            {
+                return null;
+            }
+
+            if (values.Count == 0)
+            {
+                return null;
+            }
+
+            if (values.Count > 1)
+            {
+                WarnAboutAmbiguousGrant(skillId, values);
+                return null;
+            }
+
+            var row = values.Single();
+            var global = double.IsNaN(Config.GlobalMultiplier)
+                ? 1.0
+                : Math.Clamp(Config.GlobalMultiplier, 0.0, MaxMultiplier);
+
+            return ServerOwnedNames.Contains(skillId) ? row : row * global;
+        }
+    }
+
+    private readonly HashSet<string> _ambiguousGrantWarned = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Once per skill, not once per repair: a session can hold many repairs and the answer has not changed in
+    /// between, so repeating it would be noise rather than information.
+    /// </summary>
+    private void WarnAboutAmbiguousGrant(string skillId, HashSet<double> values)
+    {
+        if (!_ambiguousGrantWarned.Add(skillId))
+        {
+            return;
+        }
+
+        logger.Warning(
+            $"[SkillMultiplier] {skillId} has {values.Count} different multipliers set "
+            + $"({string.Join(", ", values.OrderBy(v => v))}), so XP the server grants for it is left at "
+            + "vanilla: there is no single number to apply. Set that skill's rows to one value and its repair "
+            + "XP will follow it."
+        );
+    }
 
     /// <summary>
     /// A locale lookup, held rather than re-fetched: <see cref="LocaleService.GetLocaleDb"/> merges the locale
@@ -343,12 +482,20 @@ public sealed class SkillMultiplierMod(
     public void ReportClientActions(IEnumerable<ClientActionEntry> actions, string sessionId, bool legacyDetected)
     {
         var reported = new Dictionary<string, ClientActionEntry>(StringComparer.OrdinalIgnoreCase);
+        var unauthorized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var action in actions)
         {
             if (!string.IsNullOrWhiteSpace(action.Key))
             {
                 reported[action.Key] = action;
+            }
+
+            // A skill this client's own game will not progress locally. Its rows exist and are settable, but
+            // the client can never apply them - see ServerOwnedSkills.
+            if (action.ServerAuthoritative && !string.IsNullOrWhiteSpace(action.Skill))
+            {
+                unauthorized.Add(action.Skill);
             }
         }
 
@@ -358,6 +505,11 @@ public sealed class SkillMultiplierMod(
         {
             _clientActionsBySession[sessionId] = reported;
             _clientLegacyBySession[sessionId] = legacyDetected;
+
+            foreach (var skill in unauthorized)
+            {
+                _clientUnauthorized.Add(skill);
+            }
         }
 
         logger.Info($"[SkillMultiplier] Client {sessionId} reported {reported.Count} tunable action(s).");

@@ -54,7 +54,7 @@ internal class SkillOnTriggerPatch : ModulePatch
         // Capture what the game is granting before anything of ours touches val. This is the only honest base
         // for an action - see ActionObservations for why FactorValue is not one, and why it is captured even
         // when this mod is off (it describes the game, not us).
-        ActionObservations.Record(skillAction, val);
+        ActionObservations.Record(__instance, skillAction, val);
 
         if (!Plugin.Enabled.Value)
         {
@@ -62,13 +62,20 @@ internal class SkillOnTriggerPatch : ModulePatch
         }
 
         // One lookup against an already-built map. Doing nothing further is the common case: a player with no
-        // multipliers configured must pay no measurable cost per XP event.
+        // multipliers configured must pay no measurable cost per XP event. The key is the skill plus the
+        // action's position within it, which is what the table's keys are written from - matching on the
+        // action object instead looked right and did nothing in a raid, because a raid builds new ones.
         var multipliers = Plugin.Multipliers;
         var multiplier = 1f;
 
-        if (multipliers.Count != 0 && multipliers.TryGetValue(skillAction, out var perAction))
+        if (multipliers.Count != 0 && __instance != null && __instance.Actions != null)
         {
-            multiplier = perAction;
+            var index = System.Array.IndexOf(__instance.Actions, skillAction);
+
+            if (index >= 0 && multipliers.TryGetValue((__instance.Id, index), out var perAction))
+            {
+                multiplier = perAction;
+            }
         }
 
         // The global compounds on top of the row, exactly once, here - never in the server's globals, so a

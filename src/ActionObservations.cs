@@ -40,7 +40,12 @@ internal static class ActionObservations
         public double Max;
     }
 
-    private static readonly ConcurrentDictionary<SkillManager.SkillAction, Observation> ByAction = new();
+    /// <summary>
+    /// Keyed by skill and the action's position in that skill's action array, never by the action object
+    /// itself: a raid builds fresh action objects, so an instance-keyed dictionary records nothing once play
+    /// starts - which is what it did.
+    /// </summary>
+    private static readonly ConcurrentDictionary<(EFT.ESkillId Skill, int Index), Observation> ByAction = new();
 
     private static int _events;
 
@@ -50,15 +55,24 @@ internal static class ActionObservations
     /// <summary>
     /// Record one event's raw amount. Called on the game's main thread for every XP event, so it is one
     /// concurrent lookup and three field writes, with no allocation after the first event for an action.
+    /// The skill is passed in because the key is built from it - the action alone cannot say which skill
+    /// fired it, and it is a different object in every raid.
     /// </summary>
-    internal static void Record(SkillManager.SkillAction action, float value)
+    internal static void Record(Skill skill, SkillManager.SkillAction action, float value)
     {
-        if (action == null)
+        if (skill == null || action == null || skill.Actions == null)
         {
             return;
         }
 
-        var observation = ByAction.GetOrAdd(action, static _ => new Observation());
+        var index = System.Array.IndexOf(skill.Actions, action);
+
+        if (index < 0)
+        {
+            return;
+        }
+
+        var observation = ByAction.GetOrAdd((skill.Id, index), static _ => new Observation());
 
         observation.Count++;
         observation.Total += value;
@@ -76,13 +90,13 @@ internal static class ActionObservations
     /// torn read would misreport one figure in one report, and locking on the game's main thread per XP event
     /// to prevent that would be the wrong trade.
     /// </summary>
-    internal static Dictionary<SkillManager.SkillAction, (int Count, double Max)> Snapshot()
+    internal static Dictionary<(EFT.ESkillId Skill, int Index), (int Count, double Max)> Snapshot()
     {
-        var snapshot = new Dictionary<SkillManager.SkillAction, (int, double)>();
+        var snapshot = new Dictionary<(EFT.ESkillId, int), (int, double)>();
 
-        foreach (var (action, observation) in ByAction)
+        foreach (var (key, observation) in ByAction)
         {
-            snapshot[action] = (observation.Count, observation.Max);
+            snapshot[key] = (observation.Count, observation.Max);
         }
 
         return snapshot;

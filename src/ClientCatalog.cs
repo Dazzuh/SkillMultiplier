@@ -48,7 +48,7 @@ internal sealed class ClientActionInfo
     /// without following that arrangement. This is the only per-action name that exists, so anything built
     /// from it is naming an action, not interpreting one.
     /// </summary>
-    public string? Member { get; set; }
+    public string Member { get; set; }
 
     /// <summary>
     /// The action's own coefficient as the game reports it. Kept for reference only: it is <em>not</em> the
@@ -64,6 +64,14 @@ internal sealed class ClientActionInfo
     public double ObservedXp { get; set; }
 
     public int ObservedCount { get; set; }
+
+    /// <summary>
+    /// True when the game refuses to progress this skill from the client. A <c>ClientAuthorizedSkill</c>
+    /// overrides <c>OnTrigger</c> with a log-and-return that never calls base, so the client's whole progress
+    /// path - our prefix and the global multiplier along with it - is unreachable for that skill. Its
+    /// server-side rows are therefore the only lever that does anything.
+    /// </summary>
+    public bool ServerAuthoritative { get; set; }
 }
 
 /// <summary>Sends <see cref="ClientCatalogReport"/> once the profile - and so the skill list - exists.</summary>

@@ -144,10 +144,12 @@ internal static class ClientActionNames
         Add("Surgery[1]", "Follows Field Medicine and First Aid",
             "XP awarded whenever Field Medicine or First Aid gains XP. This pays Surgery, not those two.");
 
-        Add("LightVests[0]", "Taking damage in light gear",
-            "XP for taking damage while wearing light armour or a rig.");
-        Add("HeavyVests[0]", "Taking damage in heavy armour",
-            "XP for taking damage while wearing heavy armour.");
+        Add("LightVests[0]", "Taking damage and repairing",
+            "XP for taking damage while wearing light armour or a rig, and for repairing light armour. Both "
+                + "sources follow this one multiplier.");
+        Add("HeavyVests[0]", "Taking damage and repairing",
+            "XP for taking damage while wearing heavy armour, and for repairing it. Both sources follow this "
+                + "one multiplier.");
 
         Add("WeaponTreatment[0]", "Repairing weapons",
             "XP for repairing a weapon.");

@@ -29,7 +29,23 @@ public sealed record SkillActionEntry(
     string Description,
     string? SharedWith,
     Func<SkillsSettings, double> Get,
-    Action<SkillsSettings, double> Set);
+    Action<SkillsSettings, double> Set,
+    /// <summary>
+    /// True when this row is applied where the server pays the XP rather than by scaling the globals value.
+    /// <para>
+    /// A row scale on a globals field only reaches XP the game derives from that field - and the client bakes
+    /// those into each action's factor once, at its own startup, so a game restart is needed for a change to
+    /// land. A row that no longer has a live reader (<c>WeaponTreatment.SkillPointsPerRepair</c>, whose client
+    /// action belongs to a <c>ClientAuthorizedSkill</c> and never fires) needs the other treatment: the grant
+    /// patch multiplies what the server pays, live.
+    /// </para>
+    /// <para>
+    /// This flag is what stops the two being applied to one number twice. A skill with any row still scaling a
+    /// globals value has its XP derived from a value this mod already scaled, so the grant patch leaves it
+    /// alone - otherwise crafting and hideout XP, which are computed from scaled fields, would be squared.
+    /// </para>
+    /// </summary>
+    bool AppliedAtServerGrant = false);
 
 /// <summary>
 /// The catalog, derived from what the client <em>reads</em> - not from every field that happens to exist
@@ -160,9 +176,10 @@ public static class Catalog
             Action<SkillsSettings, double> set,
             string description,
             string? shared = null,
-            string? label = null) =>
+            string? label = null,
+            bool appliedAtServerGrant = false) =>
             list.Add(new SkillActionEntry(
-                $"Settings.{skill}.{field}", skill, label ?? field, description, shared, get, set));
+                $"Settings.{skill}.{field}", skill, label ?? field, description, shared, get, set, appliedAtServerGrant));
 
         // --- Endurance ---
         // Note the inverted condition: these pay out only while NOT overweight. Strength covers the
@@ -280,8 +297,12 @@ public static class Catalog
             "XP for moving while your noise level is low. Pays nothing when you are too loud.");
 
         // --- WeaponTreatment ---
+        // The client cannot progress this skill at all: its weapon-repair action belongs to a
+        // ClientAuthorizedSkill and never fires, so this field has no live reader. The server pays for repairs
+        // from its own repair config, so this row is applied there - see SkillActionEntry.AppliedAtServerGrant.
         Add("WeaponTreatment", "SkillPointsPerRepair", s => s.WeaponTreatment.SkillPointsPerRepair, (s, v) => s.WeaponTreatment.SkillPointsPerRepair = v,
-            "XP for repairing a weapon.");
+            "XP for repairing a weapon. Repairs are paid by the server, and this row is what scales them.",
+            appliedAtServerGrant: true);
 
         // --- Crafting ---
         // The client derives PointsPerSecond and PointsPerOriginalCraft from these four, so these are the
@@ -289,7 +310,8 @@ public static class Catalog
         Add("Crafting", "PointsPerCraftingCycle", s => s.Crafting.PointsPerCraftingCycle, (s, v) => s.Crafting.PointsPerCraftingCycle = v,
             "XP per completed crafting cycle.");
         Add("Crafting", "CraftingCycleHours", s => s.Crafting.CraftingCycleHours, (s, v) => s.Crafting.CraftingCycleHours = v,
-            "Hours in one crafting cycle. This is a duration, not an XP amount - lowering it earns the same XP in less time.");
+            "Hours per crafting cycle, used for one thing: turning the per-cycle payment into a per-second "
+                + "rate. Lower means more XP per second, and it does not change how long a craft takes.");
         Add("Crafting", "PointsPerUniqueCraftCycle", s => s.Crafting.PointsPerUniqueCraftCycle, (s, v) => s.Crafting.PointsPerUniqueCraftCycle = v,
             "XP the first time you complete a given recipe.");
         Add("Crafting", "UniqueCraftsPerCycle", s => s.Crafting.UniqueCraftsPerCycle, (s, v) => s.Crafting.UniqueCraftsPerCycle = v,

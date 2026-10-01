@@ -31,9 +31,10 @@ namespace SkillMultiplier;
 /// is baked into each carried action instead of being set as the new global. Same numbers either way.
 /// </para>
 /// <para>
-/// It carries into the client key space only. Crafting and HideoutManagement are left to the server, which
-/// scales their globals and migrates the old server-side fields itself - a skill whose event is covered by
-/// both spaces would be multiplied twice.
+/// It carries into the client key space only. Skills the game will not progress from the client, which is
+/// Crafting, HideoutManagement and anything else built the same way, are left to the server: it scales their
+/// globals and migrates the old server-side fields itself, and a value carried onto their client rows would
+/// sit there inert.
 /// </para>
 /// <para>
 /// Carried actions land one whole skill at a time - the old file has no per-action values - so every row
@@ -47,19 +48,12 @@ internal static class LegacyConfig
     private const string GlobalSection = "General";
     private const string GlobalKey = "Global Multiplier";
 
-    /// <summary>
-    /// The skills the old mod deliberately left to its server component (its own exclusion list), and which
-    /// this half must not carry: the server migrates the same skills, and both spaces cover the same event.
-    /// </summary>
-    private static readonly string[] ServerOwned = ["Crafting", "HideoutManagement"];
-
     private const string TablePath = "/skillmultiplier/api/table";
     private const string SavePath = "/skillmultiplier/api/save";
 
     /// <summary>
     /// Whether this install still holds the previous release's config. Read once and kept: the file only
     /// changes when the user edits it by hand, and re-parsing it on every heartbeat tick would be pure cost.
-    /// The marker answers for migrated installs without touching the file at all.
     /// </summary>
     private static bool? _hasLegacy;
 
@@ -205,7 +199,10 @@ internal static class LegacyConfig
             {
                 var own = 1.0;
 
-                if (Array.IndexOf(ServerOwned, action.Skill) < 0
+                // A skill the game will not progress from the client is left alone: a value carried onto its
+                // client rows would sit there inert, since the client's progress path never runs for it. The
+                // server migrates those skills itself.
+                if (!action.ServerAuthoritative
                     && perSkill.TryGetValue(action.Skill, out var legacyValue))
                 {
                     own = legacyValue;
