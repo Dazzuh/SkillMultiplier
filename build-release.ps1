@@ -1,4 +1,11 @@
 # PowerShell script to build and package SkillMultiplier for release
+param(
+    [Parameter(Mandatory, HelpMessage = 'Path to the SPT install to build against (the folder holding EscapeFromTarkov.exe)')]
+    [string]$SPTDir,
+    [string]$Configuration = 'Release'
+)
+
+$ErrorActionPreference = 'Stop'
 
 # Variables
 $projectDir = "$(Split-Path -Parent $MyInvocation.MyCommand.Path)"
@@ -13,6 +20,28 @@ $pluginSource = Join-Path $buildDir $pluginName
 $serverSource = Join-Path $serverBuildDir $serverPluginName
 $version = "unknown"
 
+# Refuse a target that is not an SPT install, same as deploy.ps1: the build needs
+# its assemblies, and building against the wrong one fails stranger later.
+$runtime = Join-Path $SPTDir 'SPT_Runtime'
+if (-not (Test-Path (Join-Path $SPTDir 'EscapeFromTarkov.exe')) -or -not (Test-Path $runtime)) {
+    throw "Does not look like an SPT install: $SPTDir (expected EscapeFromTarkov.exe and SPT_Runtime inside it)"
+}
+
+# Build first. This script used to zip whatever bin/ held, which silently packaged
+# yesterday's DLLs after a source-only change - build what you ship.
+$serverProj = Join-Path $serverDir 'SkillMultiplier-server.csproj'
+Write-Host "Building $serverProj ($Configuration)"
+dotnet build $serverProj -c $Configuration -p:SPTRuntimeDir="$runtime"
+if ($LASTEXITCODE -ne 0) { throw 'server build failed' }
+
+$clientProj = Join-Path $srcDir 'SkillMultiplier.csproj'
+Write-Host "Building $clientProj ($Configuration)"
+dotnet build $clientProj -c $Configuration -p:SPTDir="$SPTDir"
+if ($LASTEXITCODE -ne 0) { throw 'client build failed' }
+
+if (-not (Test-Path $pluginSource)) { throw "no built client at $pluginSource" }
+if (-not (Test-Path $serverSource)) { throw "no built server at $serverSource" }
+
 # Get version from csproj
 $csprojPath = Join-Path $srcDir "SkillMultiplier.csproj"
 [xml]$csprojXml = Get-Content $csprojPath
@@ -21,6 +50,15 @@ if ($version) {
     $version = $version.Trim()
 } else {
     $version = "unknown"
+}
+
+# Both halves ship one version: refuse a skew where the zip name says one thing
+# and a half says another.
+$serverCsprojPath = Join-Path $serverDir 'SkillMultiplier-server.csproj'
+[xml]$serverCsprojXml = Get-Content $serverCsprojPath
+$serverVersion = $serverCsprojXml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1
+if ($serverVersion -and $serverVersion.Trim() -ne $version) {
+    throw "version skew: client says $version, server says $($serverVersion.Trim()). Align them before releasing."
 }
 
 $zipName = "SkillMultiplier-$version.zip"
@@ -61,6 +99,27 @@ Write-Host "Copied server files to: SPT_Runtime/user/mods/dazzuh-skillmultiplier
 
 # Create zip
 Compress-Archive -Path (Join-Path $tempDir "BepInEx"), (Join-Path $tempDir "SPT_Runtime") -DestinationPath $zipPath
+
+# Prove the zip holds what was just built: read both DLLs back out and compare hashes.
+# "Packaged" is a claim about the bytes in the archive, not about the copy succeeding.
+$checkDir = Join-Path $releaseDir "temp-check"
+if (Test-Path $checkDir) {
+    Remove-Item $checkDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
+Expand-Archive -Path $zipPath -DestinationPath $checkDir -Force
+$zippedClient = Join-Path $checkDir "BepInEx/plugins/$pluginName"
+$zippedServer = Join-Path $checkDir "SPT_Runtime/user/mods/dazzuh-skillmultiplier/$serverPluginName"
+$clientHash = (Get-FileHash $pluginSource).Hash
+$serverHash = (Get-FileHash $serverSource).Hash
+if ((Get-FileHash $zippedClient).Hash -ne $clientHash) {
+    throw "the zip does not contain the client just built: $zipPath"
+}
+if ((Get-FileHash $zippedServer).Hash -ne $serverHash) {
+    throw "the zip does not contain the server just built: $zipPath"
+}
+Write-Host "Verified zip contents: client $clientHash / server $serverHash"
+Remove-Item $checkDir -Recurse -Force
 
 # Clean up temp
 Remove-Item $tempDir -Recurse -Force
