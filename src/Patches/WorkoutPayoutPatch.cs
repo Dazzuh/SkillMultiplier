@@ -47,14 +47,21 @@ internal class WorkoutSkillMemoryPatch : ModulePatch
 
     /// <summary>
     /// The skill the current workout is paying. Only meaningful while
-    /// <see cref="WorkoutExperiencePatch.InWorkout"/> is set; a stale value from the previous workout is
-    /// harmless, because the workout fetches its skill again before it asks for a payout.
+    /// <see cref="WorkoutExperiencePatch.InWorkout"/> is set; the value is forgotten in the workout
+    /// finalizer, so a stale skill from a previous workout can never leak into the next one.
     /// </summary>
     internal static bool TryGet(out ESkillId skill)
     {
         skill = _skill;
         return _known;
     }
+
+    /// <summary>
+    /// Forget the remembered skill. Called when a workout ends: without this a reward-less workout leaves
+    /// a stale skill behind, and the next workout could scale by the wrong skill's row if its payout runs
+    /// before a fresh <c>GetSkill</c>.
+    /// </summary>
+    internal static void Forget() => _known = false;
 }
 
 /// <summary>

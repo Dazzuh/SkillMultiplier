@@ -54,11 +54,13 @@ internal class WorkoutExperiencePatch : ModulePatch
     /// <summary>
     /// Cleared in a finalizer rather than a postfix: the method returns early when a workout produced no
     /// reward at all, and a postfix would leave the flag set for whatever runs next on this thread. A
-    /// thread-static field keeps that from reaching another thread in the meantime.
+    /// thread-static field keeps that from reaching another thread in the meantime. The remembered skill
+    /// is cleared too: without this a reward-less workout leaves a stale skill behind for the next one.
     /// </summary>
     [PatchFinalizer]
     private static void Finalizer()
     {
         _inWorkout = false;
+        WorkoutSkillMemoryPatch.Forget();
     }
 }

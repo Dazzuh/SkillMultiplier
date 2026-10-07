@@ -998,15 +998,15 @@ public sealed class SkillMultiplierMod(
     }
 
     /// <summary>
-    /// Whether a sibling mod folder looks like another copy of this mod: the normalized name equals ours
-    /// or starts with the mod name, so renamed copies (<c>dazzuh-skillmultiplier</c>) and suffixed backups
-    /// left inside <c>user/mods</c> (<c>SkillMultiplier.bak</c>) both match. Substring matching is
-    /// deliberately not used - it self-matches and fires on unrelated siblings.
+    /// Whether a sibling mod folder looks like another copy of this mod: the normalized name contains the
+    /// mod name, so renamed copies (<c>dazzuh-skillmultiplier</c>), suffixed backups left inside
+    /// <c>user/mods</c> (<c>SkillMultiplier.bak</c>) and plain duplicates all match. Our own folder is
+    /// excluded by full-path comparison before this is asked, so a contains-match cannot self-fire.
     /// </summary>
     private static bool IsSameModFolder(string name)
     {
         var normalized = new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 
-        return normalized == "skillmultiplier" || normalized.StartsWith("skillmultiplier", StringComparison.Ordinal);
+        return normalized.Contains("skillmultiplier", StringComparison.Ordinal);
     }
 }
