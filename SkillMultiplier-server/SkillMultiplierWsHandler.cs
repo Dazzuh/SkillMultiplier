@@ -112,9 +112,10 @@ public sealed class SkillMultiplierWsHandler(
         }
 
         // Deliberately not disposed: a broadcast snapshot taken just before this close may still hold
-        // this connection, and disposing its gate under a waiter strands the whole broadcast. A
-        // SemaphoreSlim with no contention holds no handle worth freeing; an uncontended instance is
-        // GC-collected without one. Correctness over handle hygiene.
+        // this connection, and disposing its gate under a waiter breaks the whole broadcast. An
+        // uncontended gate holds no kernel handle; a contended gate's handle is reclaimed by
+        // finalization. Connection count is single digits, so this is correctness-over-hygiene for a
+        // handful of long-lived sockets - not a pattern to copy for high-churn resources.
         // A disconnected session answers nothing further: drop its report so a departed legacy client
         // cannot pin the migration latch (or a stale action list) forever. When the drop clears the
         // latch the pushed table changed, so push - otherwise the remaining clients ride a stale answer
@@ -200,11 +201,19 @@ public sealed class SkillMultiplierWsHandler(
         // The wait sits inside the try with acquisition tracked, so any failure before or during it
         // returns false instead of escaping into the broadcast loop: one dead socket must never stop
         // the push to the rest.
+        // Bounded by timeout, not just by failure: a half-open client (frozen raid, black-holed TCP,
+        // paused debugger) never fails, it just never completes - and the sequential broadcast would
+        // stall every connection behind it, plus whatever save or close is awaiting the broadcast.
+        // Five seconds is reachability evidence, not performance tuning: a live local client answers in
+        // milliseconds, and a client that cannot take 4 KB in five seconds is gone for our purposes.
+        // (Per-connection concurrency instead of sequential sends would remove the head-of-line wait
+        // entirely; kept sequential because Fika-scale fan-out is a handful of sockets, not thousands.)
         var acquired = false;
 
         try
         {
-            await connection.SendGate.WaitAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await connection.SendGate.WaitAsync(timeout.Token);
             acquired = true;
 
             if (connection.Socket.State != WebSocketState.Open)
@@ -212,13 +221,14 @@ public sealed class SkillMultiplierWsHandler(
                 return false;
             }
 
-            await connection.Socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
+            await connection.Socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, timeout.Token);
             return true;
         }
-        catch (Exception ex) when (ex is WebSocketException or InvalidOperationException)
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
         {
-            // A dropped client is normal (game closed, raid transition, lost race with a disconnect).
-            // Never let it take down a save, and never let one dead socket stop the push to the rest.
+            // A dropped, timed-out or torn-down client is normal (game closed, raid transition, server
+            // stopping mid-push). Never let it take down a save, and never let one dead socket stop
+            // the push to the rest.
             logger.Debug($"[SkillMultiplier] Websocket send failed: {ex.Message}");
             return false;
         }
@@ -231,8 +241,8 @@ public sealed class SkillMultiplierWsHandler(
         }
         finally
         {
-            // Direct release: nothing disposes this gate any more (see OnCloseAsync), so a successful
-            // wait always pairs with exactly one release and no ObjectDisposedException path exists.
+            // Paired with the successful wait above; nothing else in this class disposes the gate, so no
+            // unmatched-release path exists from here.
             if (acquired)
             {
                 connection.SendGate.Release();

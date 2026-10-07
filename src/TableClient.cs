@@ -68,7 +68,17 @@ internal static class TableClient
     private static int _revision = -1;
     private static int _loggedRevision = int.MinValue;
     private static int _warnedRevision = int.MinValue;
-    private static bool _catalogLogged;
+
+    /// <summary>
+    /// Connection counter, bumped for every socket before it connects and published on success.
+    /// Deliveries carry the value their socket reserved: a delayed message from a replaced or failed
+    /// socket arrives with a stale epoch and is dropped, so it can never overwrite the live
+    /// connection's table. Guarded by <c>Gate</c> like <c>_revision</c>.
+    /// </summary>
+    private static int _epoch;
+    // Volatile: written on the main thread (drain), read on the heartbeat thread. Worst case without
+    // it is a duplicate catalog dump, but a torn read is not a thing this file trades in.
+    private static volatile bool _catalogLogged;
     private static volatile string _socketUrl;
 
     /// <summary>
@@ -103,7 +113,14 @@ internal static class TableClient
 
             if (!string.IsNullOrWhiteSpace(json))
             {
-                Apply(json);
+                int epoch;
+
+                lock (Gate)
+                {
+                    epoch = _epoch;
+                }
+
+                Apply(json, epoch);
             }
         }
         catch (Exception ex)
@@ -132,24 +149,30 @@ internal static class TableClient
         {
             try
             {
+                // One iteration owns exactly one socket: `using` disposes it at the end, which is safe
+                // only because iterations run strictly sequentially on this single loop thread - a second
+                // concurrent disposer would race in-flight deliveries. Never share or move this socket
+                // off this thread.
                 using var socket = new WebSocketSharp.WebSocket(url);
+
+                // Reserved before connect, published only on success. A failed attempt must change
+                // nothing: no revision reset (the stale-drop guard stays armed across backoff), no
+                // socket publish (the field must never name a dead socket), and the reserved epoch
+                // simply goes unused.
+                int epoch;
+
                 lock (Gate)
                 {
-                    _socket = socket;
-
-                    // A new connection may mean a new server epoch: the server resets its revision to 1
-                    // on every boot and re-pushes its current table on connect. Without this reset a
-                    // client holding a higher revision would drop that re-push as stale and run the old
-                    // table until the next save. Re-applying the same revision after a transient drop is
-                    // harmless (rebuilds are idempotent).
-                    _revision = -1;
+                    _epoch++;
+                    epoch = _epoch;
                 }
+
                 socket.SslConfiguration.ServerCertificateValidationCallback = (_, _, _, _) => true;
                 socket.OnMessage += (_, e) =>
                 {
                     if (e.IsText)
                     {
-                        Apply(e.Data);
+                        Apply(e.Data, epoch);
                     }
                 };
                 socket.OnError += (_, e) => Plugin.Log.LogWarning($"[SkillMultiplier] Websocket error: {e.Message}");
@@ -159,6 +182,19 @@ internal static class TableClient
                 if (!socket.IsAlive)
                 {
                     throw new Exception("the websocket did not open");
+                }
+
+                lock (Gate)
+                {
+                    _socket = socket;
+
+                    // A new live connection may mean a new server epoch: the server resets its revision
+                    // to 1 on every boot and re-pushes its current table on connect. Without this reset a
+                    // client holding a higher revision would drop that re-push as stale and run the old
+                    // table until the next save. Re-applying the same revision after a transient drop is
+                    // harmless (rebuilds are idempotent); a delayed push from the previous socket carries
+                    // its stale epoch and is fenced out in Apply.
+                    _revision = -1;
                 }
 
                 Plugin.DebugLog($"[SkillMultiplier] Connected to the server at {url}.");
@@ -209,13 +245,19 @@ internal static class TableClient
     {
         Quitting = true;
 
+        // Snapshot under the gate, close outside it: Close() runs a network handshake that must not
+        // hold the lock the loop thread needs to clear the field.
+        WebSocketSharp.WebSocket socket;
+
+        lock (Gate)
+        {
+            socket = _socket;
+            _socket = null;
+        }
+
         try
         {
-            lock (Gate)
-            {
-                _socket?.Close();
-                _socket = null;
-            }
+            socket?.Close();
         }
         catch (Exception ex)
         {
@@ -267,7 +309,7 @@ internal static class TableClient
         public Dictionary<string, double> Actions { get; set; }
     }
 
-    private static void Apply(string json)
+    private static void Apply(string json, int epoch)
     {
         try
         {
@@ -282,6 +324,13 @@ internal static class TableClient
 
             lock (Gate)
             {
+                // Stale connection first: a delayed delivery from a replaced or failed socket must not
+                // overwrite the live connection's table, whatever revisions the two carry.
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
                 // A push that is not newer is either a duplicate, the HTTP fallback racing the socket, or
                 // an out-of-order delivery - applying a stale table would regress live multipliers, so
                 // anything at or below the held revision is dropped. (An equal revision with different
@@ -377,6 +426,9 @@ internal static class TableClient
         // leaves the request set for the next tick instead of silently dropping a rebuild. This also
         // runs inside Harmony prefixes and Update, so an exception escaping here would propagate into
         // game code - everything fallible underneath already guards itself, and this is the backstop.
+        // Declared outside so the catch judges the attempted generation, not whatever arrived mid-drain.
+        int revision = -1;
+
         try
         {
             // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
@@ -389,19 +441,25 @@ internal static class TableClient
             }
 
             Dictionary<string, float> actions;
+            int drainedRevision;
 
             lock (Gate)
             {
                 actions = _actions;
+                drainedRevision = _revision;
             }
+
+            // Published for the catch below, which cannot see try-scoped locals: the failure belongs to
+            // this generation, not whatever arrives mid-drain.
+            revision = drainedRevision;
 
             Plugin.Multipliers = ActionCatalog.BuildMap(manager, actions);
 
             // Log once per revision. The heartbeat re-requests this, so an empty table would otherwise print a
             // line every few seconds for the whole session.
-            if (_revision != _loggedRevision)
+            if (drainedRevision != _loggedRevision)
             {
-                _loggedRevision = _revision;
+                _loggedRevision = drainedRevision;
 
                 foreach (var (key, value) in actions)
                 {
@@ -409,7 +467,7 @@ internal static class TableClient
                 }
 
                 Plugin.DebugLog(
-                    $"[SkillMultiplier] Revision {_revision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
+                    $"[SkillMultiplier] Revision {drainedRevision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
                         + "mapped to actions in this client."
                 );
             }
@@ -427,10 +485,11 @@ internal static class TableClient
         {
             // Once per revision, not once per frame: a deterministically-throwing drain rides the 60Hz
             // Update pump, and per-frame warnings would bury the log. The flag stays set either way, so a
-            // transient failure still retries next tick.
-            if (_revision != _warnedRevision)
+            // transient failure still retries next tick. Judged on the generation this drain attempted,
+            // not whatever arrived mid-drain.
+            if (revision != _warnedRevision)
             {
-                _warnedRevision = _revision;
+                _warnedRevision = revision;
                 Plugin.Log.LogWarning($"[SkillMultiplier] Table rebuild failed, will retry: {ex.Message}");
             }
         }
