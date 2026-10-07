@@ -106,15 +106,15 @@ public sealed class SkillMultiplierWsHandler(
 
     public async Task OnCloseAsync(WebSocket ws, HttpContext context, string sessionIdContext)
     {
-        Connection? connection;
-
         lock (_gate)
         {
-            _connections.Remove(ws, out connection);
+            _connections.Remove(ws);
         }
 
-        connection?.SendGate.Dispose();
-
+        // Deliberately not disposed: a broadcast snapshot taken just before this close may still hold
+        // this connection, and disposing its gate under a waiter strands the whole broadcast. A
+        // SemaphoreSlim with no contention holds no handle worth freeing; an uncontended instance is
+        // GC-collected without one. Correctness over handle hygiene.
         // A disconnected session answers nothing further: drop its report so a departed legacy client
         // cannot pin the migration latch (or a stale action list) forever. When the drop clears the
         // latch the pushed table changed, so push - otherwise the remaining clients ride a stale answer
@@ -197,9 +197,9 @@ public sealed class SkillMultiplierWsHandler(
     /// <summary>Returns false for a socket that is closed or faulted, so the caller can report a real count.</summary>
     private async Task<bool> SendToAsync(Connection connection, byte[] payload)
     {
-        // The wait sits inside the try with acquisition tracked: OnClose disposes this gate, and a
-        // broadcast snapshot taken just before the close would otherwise throw ObjectDisposedException
-        // out of the wait and kill the whole broadcast loop for the remaining connections.
+        // The wait sits inside the try with acquisition tracked, so any failure before or during it
+        // returns false instead of escaping into the broadcast loop: one dead socket must never stop
+        // the push to the rest.
         var acquired = false;
 
         try
@@ -215,7 +215,7 @@ public sealed class SkillMultiplierWsHandler(
             await connection.Socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
             return true;
         }
-        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)
+        catch (Exception ex) when (ex is WebSocketException or InvalidOperationException)
         {
             // A dropped client is normal (game closed, raid transition, lost race with a disconnect).
             // Never let it take down a save, and never let one dead socket stop the push to the rest.
@@ -231,17 +231,11 @@ public sealed class SkillMultiplierWsHandler(
         }
         finally
         {
+            // Direct release: nothing disposes this gate any more (see OnCloseAsync), so a successful
+            // wait always pairs with exactly one release and no ObjectDisposedException path exists.
             if (acquired)
             {
-                try
-                {
-                    connection.SendGate.Release();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // Lost the race with OnClose's dispose after a successful wait: the send is done,
-                    // the gate is gone, and there is nothing left to release.
-                }
+                connection.SendGate.Release();
             }
         }
     }

@@ -136,6 +136,13 @@ internal static class TableClient
                 lock (Gate)
                 {
                     _socket = socket;
+
+                    // A new connection may mean a new server epoch: the server resets its revision to 1
+                    // on every boot and re-pushes its current table on connect. Without this reset a
+                    // client holding a higher revision would drop that re-push as stale and run the old
+                    // table until the next save. Re-applying the same revision after a transient drop is
+                    // harmless (rebuilds are idempotent).
+                    _revision = -1;
                 }
                 socket.SslConfiguration.ServerCertificateValidationCallback = (_, _, _, _) => true;
                 socket.OnMessage += (_, e) =>
