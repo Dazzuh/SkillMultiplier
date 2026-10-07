@@ -72,17 +72,37 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.danger:hover { border-color: var(--danger); color: var(--danger); }
 button.ghost { background: transparent; }
 
+/* Save/apply notice. It overlays the top-right under the sticky header rather than sitting in
+   the flow: visible at any scroll position, and it never pushes content down when it appears. */
 .status {
-  margin: 1rem 1.5rem 0;
+  position: fixed;
+  top: 4.6rem;
+  right: 1.5rem;
+  margin: 0;
+  max-width: min(560px, calc(100vw - 3rem));
   padding: .6rem .9rem;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  z-index: 30;
   display: none;
 }
 .status.show { display: block; }
 .status.ok { border-color: var(--accent-2); }
-.status.err { border-color: var(--danger); }
+.status.err { border-color: var(--danger); cursor: pointer; }
+
+/* Narrow screens wrap the sticky header taller, so the fixed notice drops below it instead of
+   covering Apply/Reset. Tapping dismisses (see setStatus). */
+@media (max-width: 900px) {
+  .status {
+    top: auto;
+    bottom: 1rem;
+    left: 1rem;
+    right: 1rem;
+    max-width: none;
+  }
+}
 
 .toolbar {
   display: flex;
@@ -133,6 +153,12 @@ input[type="search"]:focus { outline: none; border-color: var(--accent); }
 .skill > summary:hover { background: var(--panel-2); }
 
 .skill-name { font-weight: 600; flex: 1; }
+
+/* A 0x multiplier switches that action's XP off entirely. Legal, but easy to park by accident -
+   so the whole category gets the danger border, with the reason on hover. */
+.skill.has-zero { border-color: var(--danger); }
+.global.has-zero { border-color: var(--danger); }
+.adv-skill.has-zero { outline: 1px solid var(--danger); outline-offset: 3px; border-radius: 6px; }
 .badge {
   font-size: .75rem;
   color: var(--muted);
@@ -291,6 +317,29 @@ input[type="number"]::-webkit-inner-spin-button {
 .group-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
 .group-controls input[type="range"]:disabled { opacity: .35; }
 .group-value { min-width: 4.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+/* The group readout is a number box like every row's, so it needs the row box's looks: the generic
+   input[type="number"] rule above targets grid placement for rows and must not apply here. */
+input.group-value {
+  width: 5.5rem;
+  padding: .25rem .45rem;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+  grid-column: auto;
+  grid-row: auto;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input.group-value:focus { outline: none; border-color: var(--accent); }
+input.group-value::placeholder { color: var(--muted); }
+input.group-value::-webkit-outer-spin-button,
+input.group-value::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .link-btn { font-size: .78rem; padding: .25rem .6rem; white-space: nowrap; }
 
 /* Advanced config: the same rows, rehoused. Reuses .action grid untouched. */
@@ -366,4 +415,8 @@ code { color: var(--accent); }
     grid-row: auto !important;
   }
   .math { text-align: left; }
+
+  /* The group header is four across on desktop; stack it so the slider gets a full row. */
+  .group-controls { flex-wrap: wrap; }
+  .group-controls input[type="range"] { flex-basis: 100%; order: 3; }
 }

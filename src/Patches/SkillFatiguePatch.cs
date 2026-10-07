@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using EFT;
 using SPT.Reflection.Patching;
@@ -47,10 +48,15 @@ internal class SkillFatiguePatch : ModulePatch
 {
     protected override MethodBase GetTargetMethod()
     {
+        // Fail fast, not cryptic: a game update that renames this method must surface here at startup,
+        // naming the expected signature, rather than as a silent no-op with vanilla fatigue. Pinned by
+        // parameter types, so a future overload surfaces as "not found" rather than AmbiguousMatch.
         return typeof(SkillManager).GetMethod(
             "GetEffectiveness",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
-        );
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, new[] { typeof(int) }, null
+        ) ?? throw new InvalidOperationException(
+            "SkillManager.GetEffectiveness (instance) was not found - check the supported game version.");
     }
 
     [PatchPostfix]

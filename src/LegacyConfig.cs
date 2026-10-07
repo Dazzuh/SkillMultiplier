@@ -80,6 +80,23 @@ internal static class LegacyConfig
         return _hasLegacy.Value;
     }
 
+    /// <summary>
+    /// Read the answer from the warmed store instead of the disk. Warmed once by
+    /// <see cref="WarmLegacyCache"/> at plugin startup; a session that answers the migration question
+    /// clears the answer via <see cref="MarkActed"/>, and the next call re-detects - at most one extra
+    /// file read per session, never on a per-frame path. (Both this and <see cref="WarmLegacyCache"/>
+    /// are thin aliases over <see cref="HasLegacyConfig"/>; the "cache" is the <c>_hasLegacy</c> field
+    /// itself.)
+    /// </summary>
+    internal static bool CachedLegacyConfig() => HasLegacyConfig();
+
+    /// <summary>
+    /// Run the file-backed detection now, on the calling thread, so later calls are cache hits. Called
+    /// once from <c>TableClient.Start</c> during plugin load - not during gameplay - so the disk read
+    /// happens on a loading screen rather than inside an XP event or frame.
+    /// </summary>
+    internal static void WarmLegacyCache() => HasLegacyConfig();
+
     /// <summary>Read the file for old values without touching anything. False when there is nothing to carry.</summary>
     private static bool DetectLegacy()
     {

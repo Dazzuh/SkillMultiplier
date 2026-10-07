@@ -93,7 +93,9 @@
     Apply message says when a restart is still needed. A save reaches a running game over its socket,
     even mid-raid &mdash; and it only affects <em>future</em> XP: points already earned are untouched.
     A skill's row also scales what the server pays that skill directly &mdash; repairs, and quest and
-    prestige rewards &mdash; so a 5&times; row turns a 100-point quest reward into 500.
+    prestige rewards &mdash; so a 5&times; row turns a 100-point quest reward into 500, unless the
+    skill's rows disagree or the grant is suppressed for a globals-backed skill (Crafting, Hideout
+    Management), in which case the server-paid amount stays vanilla.
   </p>
   <p class="muted">
     Base values come either from the server's live globals or, for the actions that only exist inside the

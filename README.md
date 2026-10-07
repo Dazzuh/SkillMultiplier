@@ -52,7 +52,9 @@ pays the vest skills according to the armour's type, a weapon repair pays Weapon
 repair pays Charisma. None of that passes through the client's skill code, so any client-side patch leaves
 it untouched - those rows are scaled on the server, at the moment it hands the points over. Same list, same
 keys. The same row also scales anything else the server pays that skill directly, such as quest and prestige
-rewards - a 5x row means a 100-point quest reward lands as 500.
+rewards - a 5x row means a 100-point quest reward lands as 500. That holds where the row is the single
+value for the skill: conflicting row values, or a skill whose globals-backed rows suppress the grant
+(Crafting, Hideout Management), leave the server-paid amount unchanged.
 
 The hideout gym is paid the same way, but not for an action: it draws strength or endurance at random for each
 successful repetition. It therefore gets a row under each skill it can pay - `Strength[Workout]` and

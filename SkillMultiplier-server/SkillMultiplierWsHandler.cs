@@ -104,7 +104,7 @@ public sealed class SkillMultiplierWsHandler(
         return connection is null ? Task.CompletedTask : SendToAsync(connection, BuildTable());
     }
 
-    public Task OnCloseAsync(WebSocket ws, HttpContext context, string sessionIdContext)
+    public async Task OnCloseAsync(WebSocket ws, HttpContext context, string sessionIdContext)
     {
         Connection? connection;
 
@@ -115,9 +115,18 @@ public sealed class SkillMultiplierWsHandler(
 
         connection?.SendGate.Dispose();
 
+        // A disconnected session answers nothing further: drop its report so a departed legacy client
+        // cannot pin the migration latch (or a stale action list) forever. When the drop clears the
+        // latch the pushed table changed, so push - otherwise the remaining clients ride a stale answer
+        // until the next save.
+        var latchCleared = mod.DropClientSession(sessionIdContext);
+
         logger.Info($"[SkillMultiplier] Client disconnected ({sessionIdContext}); {Count} socket(s) open.");
 
-        return Task.CompletedTask;
+        if (latchCleared)
+        {
+            await BroadcastAsync();
+        }
     }
 
     /// <summary>

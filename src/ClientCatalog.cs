@@ -157,17 +157,25 @@ internal static class ClientCatalogReporter
         }
 
         var events = ActionObservations.Events;
-        var due = Since.ElapsedMilliseconds - Volatile.Read(ref _lastReport) >= ReportIntervalMs;
 
         lock (SendGate)
         {
+            // Read under the gate: SendStaged writes _lastReport from the heartbeat thread, and a torn
+            // 64-bit read on 32-bit Mono would corrupt the throttle either way.
+            var due = Since.ElapsedMilliseconds - _lastReport >= ReportIntervalMs;
+
             if (!_pending && events == _reportedEvents && !due)
             {
                 return;
             }
 
             var signature = Signature(actions);
-            var legacy = LegacyConfig.HasLegacyConfig();
+
+            // Cached, never read from disk here: the legacy answer is warmed once at plugin startup (see
+            // TableClient.Start), so staging on the game's main thread performs no file IO. MarkActed
+            // clears the cache when the answer changes, and the next stage re-warms it - at most one
+            // extra file read per session, still off the per-frame path after the first drain.
+            var legacy = LegacyConfig.CachedLegacyConfig();
 
             if (!_pending && signature == _reportedSignature && events == _reportedEvents && legacy == _reportedLegacy)
             {
@@ -202,8 +210,9 @@ internal static class ClientCatalogReporter
                 return;
             }
 
-            // Stamped before the attempt, so a server that is refusing the request is retried on the interval
-            // rather than on every heartbeat tick.
+            // Stamped before the attempt, so a server that is refusing the request backs off to the next
+            // heartbeat tick (5 s) rather than retrying continuously - not the 20 s report interval,
+            // because the stamp only gates new reports, not the requested retry flag.
             _lastReport = Since.ElapsedMilliseconds;
 
             staged = _staged;
@@ -238,7 +247,20 @@ internal static class ClientCatalogReporter
         catch (Exception ex)
         {
             // Not fatal: multipliers apply from the pushed table whether or not the server has the list.
-            // Bookkeeping is untouched, so the next heartbeat stages and retries.
+            // Restore the payload so the next heartbeat retries it - but only if nothing newer was staged
+            // meanwhile, so a fresher report is never overwritten by an older one.
+            lock (SendGate)
+            {
+                if (_staged == null)
+                {
+                    _staged = staged;
+                    _stagedEvents = stagedEvents;
+                    _stagedSignature = stagedSignature;
+                    _stagedLegacy = stagedLegacy;
+                    _sendRequested = true;
+                }
+            }
+
             Plugin.Log.LogWarning($"[SkillMultiplier] Could not report the action catalog: {ex.Message}");
         }
     }

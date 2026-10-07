@@ -67,6 +67,7 @@ internal static class TableClient
 
     private static int _revision = -1;
     private static int _loggedRevision = int.MinValue;
+    private static int _warnedRevision = int.MinValue;
     private static bool _catalogLogged;
     private static volatile string _socketUrl;
 
@@ -79,6 +80,10 @@ internal static class TableClient
 
     internal static void Start()
     {
+        // Warm the legacy-config answer now, during plugin load: the first per-frame drain must not be
+        // the one that discovers the file read.
+        LegacyConfig.WarmLegacyCache();
+
         var thread = new Thread(Run) { IsBackground = true, Name = "SkillMultiplier.Table" };
         thread.Start();
     }
@@ -283,7 +288,12 @@ internal static class TableClient
                 {
                     foreach (var (key, value) in message.Actions)
                     {
-                        _actions[key] = (float)value;
+                        // Clamped per row, like the global below: a hand-posted push carrying NaN, infinity
+                        // or a negative must not reach live game maths. (float)NaN would otherwise flow
+                        // straight into FactorValue multiplications.
+                        _actions[key] = double.IsNaN(value) || double.IsInfinity(value) || value < 0
+                            ? 1f
+                            : (float)Math.Min(value, 1000.0);
                     }
                 }
 
@@ -331,8 +341,8 @@ internal static class TableClient
 
     /// <summary>
     /// Run the game-object half of a pending rebuild. Must only ever run on the game's main thread - it is
-    /// called from the XP patches' prefixes, which the game invokes there. Safe to call repeatedly: the
-    /// flag check first keeps the unowed case to one volatile read.
+    /// called from the XP patches' prefixes and from <c>Plugin.Update</c>, which the game invokes there.
+    /// Safe to call repeatedly: the flag check first keeps the unowed case to one volatile read.
     /// <para>
     /// When the profile has not loaded yet the manager resolves to null and the request stays set, so the
     /// next tick retries - which is what makes table/push-vs-profile-load ordering irrelevant.
@@ -352,49 +362,67 @@ internal static class TableClient
             return;
         }
 
-        _rebuildRequested = false;
-
-        // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
-        // with what the server is being told, and requiring a debug flag to see it makes that evidence
-        // unavailable exactly when a mapping surprise needs explaining.
-        if (!_catalogLogged)
+        // Cleared only on the way out, once the work below is done: an exception anywhere in between
+        // leaves the request set for the next tick instead of silently dropping a rebuild. This also
+        // runs inside Harmony prefixes and Update, so an exception escaping here would propagate into
+        // game code - everything fallible underneath already guards itself, and this is the backstop.
+        try
         {
-            _catalogLogged = true;
-            ActionCatalog.LogCatalog(manager);
-        }
-
-        Dictionary<string, float> actions;
-
-        lock (Gate)
-        {
-            actions = _actions;
-        }
-
-        Plugin.Multipliers = ActionCatalog.BuildMap(manager, actions);
-
-        // Log once per revision. The heartbeat re-requests this, so an empty table would otherwise print a
-        // line every few seconds for the whole session.
-        if (_revision != _loggedRevision)
-        {
-            _loggedRevision = _revision;
-
-            foreach (var (key, value) in actions)
+            // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
+            // with what the server is being told, and requiring a debug flag to see it makes that evidence
+            // unavailable exactly when a mapping surprise needs explaining.
+            if (!_catalogLogged)
             {
-                Plugin.DebugLog($"[SkillMultiplier] table: {key} = {value}");
+                _catalogLogged = true;
+                ActionCatalog.LogCatalog(manager);
             }
 
-            Plugin.DebugLog(
-                $"[SkillMultiplier] Revision {_revision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
-                    + "mapped to actions in this client."
-            );
-        }
+            Dictionary<string, float> actions;
 
-        // One Describe feeds both consumers, so the reflection walk happens once per drain: the migration
-        // tick reads the staged copy on its background thread, and the reporter stages it for a
-        // background send. Neither re-walks game objects.
-        var described = ActionCatalog.Describe(manager);
-        LegacyConfig.OfferDescribed(described);
-        ClientCatalogReporter.StageForSend(described);
+            lock (Gate)
+            {
+                actions = _actions;
+            }
+
+            Plugin.Multipliers = ActionCatalog.BuildMap(manager, actions);
+
+            // Log once per revision. The heartbeat re-requests this, so an empty table would otherwise print a
+            // line every few seconds for the whole session.
+            if (_revision != _loggedRevision)
+            {
+                _loggedRevision = _revision;
+
+                foreach (var (key, value) in actions)
+                {
+                    Plugin.DebugLog($"[SkillMultiplier] table: {key} = {value}");
+                }
+
+                Plugin.DebugLog(
+                    $"[SkillMultiplier] Revision {_revision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
+                        + "mapped to actions in this client."
+                );
+            }
+
+            // One Describe feeds both consumers, so the reflection walk happens once per drain: the migration
+            // tick reads the staged copy on its background thread, and the reporter stages it for a
+            // background send. Neither re-walks game objects.
+            var described = ActionCatalog.Describe(manager);
+            LegacyConfig.OfferDescribed(described);
+            ClientCatalogReporter.StageForSend(described);
+
+            _rebuildRequested = false;
+        }
+        catch (Exception ex)
+        {
+            // Once per revision, not once per frame: a deterministically-throwing drain rides the 60Hz
+            // Update pump, and per-frame warnings would bury the log. The flag stays set either way, so a
+            // transient failure still retries next tick.
+            if (_revision != _warnedRevision)
+            {
+                _warnedRevision = _revision;
+                Plugin.Log.LogWarning($"[SkillMultiplier] Table rebuild failed, will retry: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>
