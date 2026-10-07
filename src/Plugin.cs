@@ -40,8 +40,9 @@ public class Plugin : BaseUnityPlugin
     /// array - not by the action object. A raid builds its own <c>SkillManager</c> and its own action
     /// objects, so an instance-keyed map silently stops matching the moment play starts; the skill id and
     /// the index survive that, and they are the same two things the table's keys are written from.
-    /// Volatile for the same reason as <see cref="GlobalMultiplier"/> - written by the table thread,
-    /// read on the game's main thread.
+    /// Volatile because it is published by the main-thread rebuild drain and read by the XP patches on
+    /// that same thread, while background threads replace the reference wholesale - readers always see a
+    /// complete map, never a half-built one.
     /// </summary>
     internal static volatile Dictionary<(EFT.ESkillId Skill, int Index), float> Multipliers = [];
 

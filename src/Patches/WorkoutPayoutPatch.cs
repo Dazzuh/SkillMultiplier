@@ -94,16 +94,25 @@ internal class WorkoutPayoutPatch : ModulePatch
             return;
         }
 
+        if (!Plugin.Enabled.Value)
+        {
+            return;
+        }
+
         if (!WorkoutSkillMemoryPatch.TryGet(out var skillId))
         {
             return;
         }
 
-        if (
-            !Plugin.Multipliers.TryGetValue((skillId, WorkoutExperiencePatch.WorkoutIndex), out var multiplier)
-        )
+        // Default 1.0 so a global-only change still reaches the gym: mirrors SkillOnTriggerPatch, where
+        // the row defaults the same way and the global compounds on top. Returning only when both are 1
+        // keeps the two taps in agreement and matches the UI math column. (TryGetValue writes default(float)
+        // into out on a miss, so the row goes through a temp instead of doubling as the default.)
+        var multiplier = 1f;
+
+        if (Plugin.Multipliers.TryGetValue((skillId, WorkoutExperiencePatch.WorkoutIndex), out var row))
         {
-            return;
+            multiplier = row;
         }
 
         var global = Plugin.GlobalMultiplier;

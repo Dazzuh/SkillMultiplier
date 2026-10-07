@@ -46,6 +46,10 @@ internal class SkillOnTriggerPatch : ModulePatch
     [PatchPrefix]
     private static void Prefix(Skill __instance, SkillManager.SkillAction skillAction, ref float val)
     {
+        // This prefix runs on the game's main thread, so it is the pump for everything that must read
+        // game objects: a requested table rebuild is drained here before any multiplier is applied.
+        TableClient.DrainMainThread();
+
         if (skillAction == null)
         {
             return;

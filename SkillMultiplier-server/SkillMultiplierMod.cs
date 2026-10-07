@@ -116,6 +116,24 @@ public sealed class SkillMultiplierMod(
     };
 
     /// <summary>
+    /// Skills whose server-paid XP is computed from globals fields this mod scales in place: crafting
+    /// payouts derive from the <c>Crafting.Points*</c> rows, hideout payouts from the
+    /// <c>HideoutManagement.SkillPoints*</c> rows. For these, a scaled row means the grant already
+    /// carries the multiplier - multiplying the grant as well would square it.
+    /// <para>
+    /// Every other server-paid source - repairs (computed from <c>repair.json</c>, not from globals)
+    /// and quest rewards (fixed amounts) - is independent of the scaled fields, so those grants follow
+    /// the skill's row. Suppressing them too, as the old per-skill guard did, left e.g. repair Intellect
+    /// vanilla against user intent.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> GrantsDerivedFromScaledGlobals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Crafting",
+        "HideoutManagement",
+    };
+
+    /// <summary>
     /// Skills a connected client has reported as ones its own game refuses to progress locally. Kept as the
     /// union across sessions rather than per session: the question is whether the client can apply anything to
     /// the skill at all, and one install that cannot is enough to say its rows are not a duplicate.
@@ -148,10 +166,11 @@ public sealed class SkillMultiplierMod(
     /// </para>
     /// <para>
     /// Null when the skill has no row set, when its rows disagree, or when a row of its own still scales a
-    /// globals value - in that last case the server derives the XP from a number this mod has already scaled,
-    /// and multiplying the grant too would square it. Two different numbers for one skill mean there is no
-    /// single answer, and picking one of them - the first, the largest, their product - would be a guess the
-    /// page cannot show the user. Either way the grant is left at vanilla, and says so once in the log.
+    /// globals value the grant itself is computed from (crafting/hideout) - in that case the server derives
+    /// the XP from a number this mod has already scaled, and multiplying the grant too would square it. Two
+    /// different numbers for one skill mean there is no single answer, and picking one of them - the first,
+    /// the largest, their product - would be a guess the page cannot show the user. Either way the grant is
+    /// left at vanilla, and says so once in the log.
     /// </para>
     /// </summary>
     public double? ServerGrantMultiplier(SkillTypes skill)
@@ -176,6 +195,11 @@ public sealed class SkillMultiplierMod(
 
             var coveredByValueScaling = false;
 
+            // Only skills whose grants are computed from scaled globals fields can square: for those, a
+            // scaled row means the grant already carries the multiplier. Repair and quest grants are
+            // computed elsewhere, so their skills' rows still apply.
+            var grantDerivesFromScaledGlobals = GrantsDerivedFromScaledGlobals.Contains(skillId);
+
             foreach (var entry in Catalog.All)
             {
                 if (!entry.Skill.Equals(skillId, StringComparison.OrdinalIgnoreCase)
@@ -188,7 +212,7 @@ public sealed class SkillMultiplierMod(
 
                 // A row still scaling a globals value means the server computes this skill's XP from a number
                 // this mod has already scaled. Multiplying the grant as well would square it.
-                if (!entry.AppliedAtServerGrant)
+                if (!entry.AppliedAtServerGrant && grantDerivesFromScaledGlobals)
                 {
                     coveredByValueScaling = true;
                 }
@@ -939,19 +963,24 @@ public sealed class SkillMultiplierMod(
     {
         try
         {
-            var modsRoot = Path.Combine(Path.GetDirectoryName(ModFolder) ?? ModFolder);
-            var parent = Directory.GetParent(modsRoot)?.FullName ?? modsRoot;
+            // ModFolder is already .../user/mods/<own-folder>: enumerate it directly. (An earlier version
+            // went one level further up to .../user/, so a second copy inside user/mods - the exact
+            // failure the README warns compounds - was never found.)
+            var modsRoot = Path.GetDirectoryName(ModFolder) ?? ModFolder;
 
-            if (!Directory.Exists(parent))
+            if (!Directory.Exists(modsRoot))
             {
                 return;
             }
 
+            var ownPath = Path.GetFullPath(ModFolder).TrimEnd(Path.DirectorySeparatorChar);
+
             var conflicting = Directory
-                .GetDirectories(parent)
+                .GetDirectories(modsRoot)
+                .Where(dir => !Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar)
+                    .Equals(ownPath, StringComparison.OrdinalIgnoreCase))
                 .Select(Path.GetFileName)
-                .Where(name => name != null &&
-                               name.Contains("SkillMultiplier", StringComparison.OrdinalIgnoreCase));
+                .Where(name => name != null && IsSameModFolder(name));
 
             foreach (var name in conflicting)
             {
@@ -966,5 +995,18 @@ public sealed class SkillMultiplierMod(
         {
             logger.Debug($"[SkillMultiplier] Conflict scan skipped: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Whether a sibling mod folder looks like another copy of this mod: the normalized name equals ours
+    /// or starts with the mod name, so renamed copies (<c>dazzuh-skillmultiplier</c>) and suffixed backups
+    /// left inside <c>user/mods</c> (<c>SkillMultiplier.bak</c>) both match. Substring matching is
+    /// deliberately not used - it self-matches and fires on unrelated siblings.
+    /// </summary>
+    private static bool IsSameModFolder(string name)
+    {
+        var normalized = new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+        return normalized == "skillmultiplier" || normalized.StartsWith("skillmultiplier", StringComparison.Ordinal);
     }
 }

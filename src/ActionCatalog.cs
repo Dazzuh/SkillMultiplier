@@ -10,6 +10,12 @@ namespace SkillMultiplier;
 /// <summary>
 /// Reads the running client's real action list.
 /// <para>
+/// Threading contract: every member of this class reads live game objects - the <c>SkillManager</c>,
+/// skill <c>Actions</c> arrays, <c>FactorValue</c> getters, and reflected fields and delegates - so every
+/// call must happen on the game's main thread. The only entry point is
+/// <c>TableClient.DrainMainThread</c>, called from the XP patches' prefixes. Background threads never
+/// call in: they set a rebuild flag and consume the published map.
+/// </para>
 /// This exists because the server's catalog cannot be used for this. The server's keys address numbers in
 /// its own <c>globals</c> tables, and those do not correspond one-to-one with actions: an action's
 /// expression can read several globals fields (Strength's six entries are Min/Max pairs feeding one

@@ -45,7 +45,10 @@ internal class WorkoutExperiencePatch : ModulePatch
     [PatchPrefix]
     private static void Prefix()
     {
+        // Game thread, like SkillOnTriggerPatch.Prefix: drain a requested rebuild here too, so a table
+        // pushed during a workout-only session still lands without waiting for a raid XP event.
         _inWorkout = true;
+        TableClient.DrainMainThread();
     }
 
     /// <summary>

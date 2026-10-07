@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using EFT;
 using Newtonsoft.Json;
 using SPT.Common.Http;
@@ -107,6 +108,23 @@ internal static class ClientCatalogReporter
     private static long _reportedSignature = long.MinValue;
 
     /// <summary>
+    /// Guards the stage/send handoff and all report bookkeeping below: staging runs on the game's main
+    /// thread while sending runs on the heartbeat thread, so the two race each other without this.
+    /// </summary>
+    private static readonly object SendGate = new();
+
+    /// <summary>A described action list waiting for the heartbeat thread to send, if one is owed.</summary>
+    private static List<ClientActionInfo> _staged;
+
+    private static int _stagedEvents;
+
+    private static long _stagedSignature;
+
+    private static bool _stagedLegacy;
+
+    private static volatile bool _sendRequested;
+
+    /// <summary>
     /// Queue a report. Called at startup and on every successful connection, because the server holds this
     /// per session: a server restart empties it, and without a re-report the UI would show no client actions
     /// until the game was restarted too. Re-reporting is idempotent - it replaces this session's set.
@@ -118,35 +136,32 @@ internal static class ClientCatalogReporter
     /// report, or when the set of actions has changed.
     /// <para>
     /// The set check is why this runs on the interval rather than only on events. A Cecil-injected skill does
-    /// not exist yet when this client first looks, so reporting once at startup missed every skill another mod
+    /// not exist yet when this client first looked, so reporting once at startup missed every skill another mod
     /// adds - and they only appeared if something later forced a reconnect, which made this look
     /// intermittently broken rather than plainly broken.
     /// </para>
+    /// <para>
+    /// Split across threads by design: <see cref="StageForSend"/> runs on the game's main thread (via
+    /// <c>TableClient.DrainMainThread</c>) with an already-described list, and <see cref="SendStaged"/>
+    /// runs on the heartbeat thread, where the HTTP send belongs. The handoff and all bookkeeping are
+    /// guarded by <c>SendGate</c>, since staging and sending race each other.
+    /// </para>
     /// </summary>
-    internal static void Flush(SkillManager manager)
+    internal static void StageForSend(List<ClientActionInfo> described)
     {
-        if (manager == null)
+        var actions = described ?? new List<ClientActionInfo>();
+
+        if (actions.Count == 0)
         {
             return;
         }
 
         var events = ActionObservations.Events;
-        var due = Since.ElapsedMilliseconds - _lastReport >= ReportIntervalMs;
+        var due = Since.ElapsedMilliseconds - Volatile.Read(ref _lastReport) >= ReportIntervalMs;
 
-        if (!_pending && events == _reportedEvents && !due)
+        lock (SendGate)
         {
-            return;
-        }
-
-        // Stamped before the attempt, so a server that is refusing the request is retried on the interval
-        // rather than on every heartbeat tick.
-        _lastReport = Since.ElapsedMilliseconds;
-
-        try
-        {
-            var actions = ActionCatalog.Describe(manager);
-
-            if (actions.Count == 0)
+            if (!_pending && events == _reportedEvents && !due)
             {
                 return;
             }
@@ -161,24 +176,69 @@ internal static class ClientCatalogReporter
                 return;
             }
 
+            _staged = actions;
+            _stagedEvents = events;
+            _stagedSignature = signature;
+            _stagedLegacy = legacy;
+            _sendRequested = true;
+        }
+    }
+
+    /// <summary>
+    /// Send a staged report, if one is owed. Runs on the heartbeat thread: serialization touches only the
+    /// staged DTOs and the POST is plain IO, so no game objects are involved.
+    /// </summary>
+    internal static void SendStaged()
+    {
+        List<ClientActionInfo> staged;
+        int stagedEvents;
+        long stagedSignature;
+        bool stagedLegacy;
+
+        lock (SendGate)
+        {
+            if (!_sendRequested || _staged == null)
+            {
+                return;
+            }
+
+            // Stamped before the attempt, so a server that is refusing the request is retried on the interval
+            // rather than on every heartbeat tick.
+            _lastReport = Since.ElapsedMilliseconds;
+
+            staged = _staged;
+            stagedEvents = _stagedEvents;
+            stagedSignature = _stagedSignature;
+            stagedLegacy = _stagedLegacy;
+            _staged = null;
+            _sendRequested = false;
+        }
+
+        try
+        {
             RequestHandler.PostJson(Path, JsonConvert.SerializeObject(new ClientCatalogReport
             {
-                Actions = actions,
-                LegacyDetected = legacy,
+                Actions = staged,
+                LegacyDetected = stagedLegacy,
             }));
-            _pending = false;
-            _reportedEvents = events;
-            _reportedSignature = signature;
-            _reportedLegacy = legacy;
+
+            lock (SendGate)
+            {
+                _pending = false;
+                _reportedEvents = stagedEvents;
+                _reportedSignature = stagedSignature;
+                _reportedLegacy = stagedLegacy;
+            }
 
             Plugin.DebugLog(
-                $"[SkillMultiplier] Reported {actions.Count} tunable action(s) to the server "
-                    + $"({events} XP event(s) observed so far)."
+                $"[SkillMultiplier] Reported {staged.Count} tunable action(s) to the server "
+                    + $"({stagedEvents} XP event(s) observed so far)."
             );
         }
         catch (Exception ex)
         {
             // Not fatal: multipliers apply from the pushed table whether or not the server has the list.
+            // Bookkeeping is untouched, so the next heartbeat stages and retries.
             Plugin.Log.LogWarning($"[SkillMultiplier] Could not report the action catalog: {ex.Message}");
         }
     }

@@ -22,6 +22,14 @@ namespace SkillMultiplier;
 /// No port or certificate handling appears here on purpose: <see cref="RequestHandler"/> resolves the host
 /// and session id from the process arguments SPT launched the game with, and accepts the self-signed cert.
 /// </para>
+/// <para>
+/// Threading contract: the socket and heartbeat threads parse and store pushed data only - they never
+/// touch game objects. Everything that reads the live <c>SkillManager</c> (resolving it, walking action
+/// arrays, reading <c>FactorValue</c> getters, reflective member mapping) runs in
+/// <see cref="DrainMainThread"/>, which only ever executes on the game's main thread via the XP patches'
+/// prefixes. Unity object reads off the main thread are not safe, so background threads request work
+/// with <see cref="RequestRebuild"/> and the reporter's <c>SendStaged</c> instead of doing it.
+/// </para>
 /// </summary>
 internal static class TableClient
 {
@@ -43,6 +51,19 @@ internal static class TableClient
 
     /// <summary>The table's actions, as pushed. Kept so the map can be rebuilt once the profile loads.</summary>
     private static Dictionary<string, float> _actions = [];
+
+    /// <summary>
+    /// A rebuild is owed to the game's main thread. Set by the socket thread (each push), the HTTP fallback
+    /// and the heartbeat; cleared by <see cref="DrainMainThread"/> once the game objects have been read.
+    /// Starts set so the first profile load builds the map without waiting for a push.
+    /// </summary>
+    private static volatile bool _rebuildRequested = true;
+
+    /// <summary>
+    /// Ask the game's main thread to re-read the action list and republish the map. Safe from any thread:
+    /// it only sets the flag. The actual game-object reads happen in <see cref="DrainMainThread"/>.
+    /// </summary>
+    internal static void RequestRebuild() => _rebuildRequested = true;
 
     private static int _revision = -1;
     private static int _loggedRevision = int.MinValue;
@@ -297,7 +318,9 @@ internal static class TableClient
             // HTTP fallback may have already applied this same table.
             Plugin.SetFatigueDisabled(disableFatigue);
 
-            Rebuild();
+            // Game objects are read on the game's main thread, not here: queue the rebuild for the next
+            // XP patch tick rather than walking the SkillManager off-thread.
+            RequestRebuild();
         }
         catch (Exception ex)
         {
@@ -307,17 +330,29 @@ internal static class TableClient
     }
 
     /// <summary>
-    /// Turn the pushed keys into action objects. Safe to call repeatedly, and called again from the
-    /// heartbeat because the table can arrive before the profile - and therefore the SkillManager - exists.
+    /// Run the game-object half of a pending rebuild. Must only ever run on the game's main thread - it is
+    /// called from the XP patches' prefixes, which the game invokes there. Safe to call repeatedly: the
+    /// flag check first keeps the unowed case to one volatile read.
+    /// <para>
+    /// When the profile has not loaded yet the manager resolves to null and the request stays set, so the
+    /// next tick retries - which is what makes table/push-vs-profile-load ordering irrelevant.
+    /// </para>
     /// </summary>
-    internal static void Rebuild()
+    internal static void DrainMainThread()
     {
+        if (!_rebuildRequested)
+        {
+            return;
+        }
+
         var manager = ActionCatalog.Resolve();
 
         if (manager == null)
         {
             return;
         }
+
+        _rebuildRequested = false;
 
         // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
         // with what the server is being told, and requiring a debug flag to see it makes that evidence
@@ -328,11 +363,6 @@ internal static class TableClient
             ActionCatalog.LogCatalog(manager);
         }
 
-        // Introduce this client's action list to the server, so its UI can render the actions that only
-        // exist here. Re-armed on each reconnect, since the server keeps it per session.
-        LegacyConfig.Tick(manager);
-        ClientCatalogReporter.Flush(manager);
-
         Dictionary<string, float> actions;
 
         lock (Gate)
@@ -340,11 +370,10 @@ internal static class TableClient
             actions = _actions;
         }
 
-        var map = ActionCatalog.BuildMap(manager, actions);
-        Plugin.Multipliers = map;
+        Plugin.Multipliers = ActionCatalog.BuildMap(manager, actions);
 
-        // Log once per revision. The heartbeat re-runs this, so an empty table would otherwise print a line
-        // every few seconds for the whole session.
+        // Log once per revision. The heartbeat re-requests this, so an empty table would otherwise print a
+        // line every few seconds for the whole session.
         if (_revision != _loggedRevision)
         {
             _loggedRevision = _revision;
@@ -355,15 +384,26 @@ internal static class TableClient
             }
 
             Plugin.DebugLog(
-                $"[SkillMultiplier] Revision {_revision}: {map.Count} of {actions.Count} action multiplier(s) "
+                $"[SkillMultiplier] Revision {_revision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
                     + "mapped to actions in this client."
             );
         }
+
+        // One Describe feeds both consumers, so the reflection walk happens once per drain: the migration
+        // tick reads the staged copy on its background thread, and the reporter stages it for a
+        // background send. Neither re-walks game objects.
+        var described = ActionCatalog.Describe(manager);
+        LegacyConfig.OfferDescribed(described);
+        ClientCatalogReporter.StageForSend(described);
     }
 
     /// <summary>
     /// Retry building the map on a slow timer. Only the first successful build matters in practice; this is
     /// what makes ordering between "table arrived" and "profile loaded" irrelevant.
+    /// <para>
+    /// Game objects are never touched here: this only re-requests the rebuild (drained on the game's main
+    /// thread) and sends an already-staged catalog report. Both are safe from a background thread.
+    /// </para>
     /// </summary>
     internal static void StartHeartbeat()
     {
@@ -376,17 +416,17 @@ internal static class TableClient
                 try
                 {
                     // Also runs when the catalog has not been dumped yet, so a client whose sync failed still
-                    // records what its own action list looks like.
+                    // records what its own action list looks like - on the next main-thread tick.
                     if (!_catalogLogged || Plugin.Multipliers.Count == 0)
                     {
-                        Rebuild();
+                        RequestRebuild();
                     }
 
-                    // While a report is still owed - the profile may not have existed at the first attempt, or
-                    // the server may have restarted since - keep trying on this slow timer.
-                    var resolved = ActionCatalog.Resolve();
-                    LegacyConfig.Tick(resolved);
-                    ClientCatalogReporter.Flush(resolved);
+                    // The migration tick (file + network IO) and the staged report send both run here, on a
+                    // background thread, consuming what the main-thread drain staged. Neither touches game
+                    // objects - and while a report is still owed, this keeps retrying on the slow timer.
+                    LegacyConfig.Tick();
+                    ClientCatalogReporter.SendStaged();
                 }
                 catch (Exception ex)
                 {

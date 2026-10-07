@@ -105,12 +105,23 @@ internal static class LegacyConfig
     }
 
     /// <summary>
-    /// Act on the page's answer, if one has arrived and this install has not acted yet. Runs on ticks that
-    /// already have a <see cref="SkillManager"/>, because carrying needs the live action list.
+    /// The latest main-thread action description, for the background migration tick. Written by
+    /// <c>TableClient.DrainMainThread</c>, read by <see cref="Tick"/>: the tick itself does HTTP and file
+    /// IO, which must stay off the game's main thread, so it consumes this instead of describing again.
     /// </summary>
-    internal static void Tick(SkillManager manager)
+    private static volatile List<ClientActionInfo> _described = new();
+
+    /// <summary>Hand the background tick a fresh action description. Safe from any thread.</summary>
+    internal static void OfferDescribed(List<ClientActionInfo> described) => _described = described ?? new();
+
+    /// <summary>
+    /// Act on the page's answer, if one has arrived and this install has not acted yet. Runs on the
+    /// heartbeat thread: file and network IO are fine here. Game state arrives via
+    /// <see cref="OfferDescribed"/> rather than a live manager, so nothing here touches game objects.
+    /// </summary>
+    internal static void Tick()
     {
-        if (manager == null || _acted)
+        if (_acted)
         {
             return;
         }
@@ -124,7 +135,7 @@ internal static class LegacyConfig
                 break;
 
             case "migrate":
-                RunMigration(manager);
+                RunMigration(_described);
                 break;
 
             default:
@@ -134,12 +145,12 @@ internal static class LegacyConfig
     }
 
     /// <summary>
-    /// Runs on a tick that already has a <see cref="SkillManager"/>, and only until it succeeds or finds
-    /// nothing to do - answering deletes the old values, which stops it re-reading the file on every tick.
+    /// Runs until it succeeds or finds nothing to do - answering deletes the old values, which stops it
+    /// re-reading the file on every tick.
     /// </summary>
-    internal static void RunMigration(SkillManager manager)
+    internal static void RunMigration(List<ClientActionInfo> described)
     {
-        if (manager == null || _acted)
+        if (_acted)
         {
             return;
         }
@@ -174,7 +185,7 @@ internal static class LegacyConfig
 
         try
         {
-            var actions = ActionCatalog.Describe(manager);
+            var actions = described ?? new List<ClientActionInfo>();
 
             if (actions.Count == 0)
             {
