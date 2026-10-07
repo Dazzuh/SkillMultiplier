@@ -44,8 +44,10 @@ client-side values push live over the socket.
 ## Standing rules
 
 - No pushes, no deploys to live, no merges without explicit instruction.
-- No review docs, plans, or machine-specific paths inside this repo. Plans live at
-  `S:\SPT-Dev\SkillMultiplier-M5-split-plan.md`; baselines beside it.
+- No review docs, plans, or machine-specific paths inside this repo. Plans and baselines
+  live as workspace-root files next to `refs/` (e.g. `SkillMultiplier-M5-split-plan.md`),
+  never in this repo. Name the file, not the drive: the workspace root is environment,
+  not content.
 - Omitted save fields preserve; empty objects reset. Explicit-invalid global is rejected and
   preserves; an omitted global preserves silently. A save replaces the whole config —
   hand-rolled partial POSTs only preserve what they omit, never what they skip.
