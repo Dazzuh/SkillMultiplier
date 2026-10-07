@@ -136,9 +136,11 @@ function shortStatus(message) {
   const text = String(message || "").trim();
   if (text.length <= 170) return text;
   const head = text.split(". ")[0] || text;
+  // Live signal first: it contains the word "restart" ("without a restart"), so testing it second
+  // would mislabel a no-restart-needed save as "Restart needed."
   let tail = "";
-  if (/restart/i.test(text)) tail = " Restart needed.";
-  else if (/live/i.test(text)) tail = " Live now.";
+  if (/without a restart|already live|live now|no restart/i.test(text)) tail = " Live now.";
+  else if (/restart/i.test(text)) tail = " Restart needed.";
   const short = (head + tail).trim();
   return short.length <= 190 ? short : head.slice(0, 167) + "...";
 }
@@ -325,12 +327,13 @@ function renderAction(skillName, action, advanced = false, globalApplies = true)
   const setValue = (value, from, defer = false) => {
     // Refuse, don't coerce: an empty or non-numeric box (a cleared field, "nan" - a number input
     // reports "" for text it cannot parse) used to become 0 via Number(""), silently storing a
-    // zero-XP multiplier. Restore the control to the stored value and change nothing.
+    // zero-XP multiplier. Both controls revert to the stored value - including the box that holds
+    // the rejected text - so the display always matches what a save would store.
     const raw = typeof value === "string" ? value.trim() : value;
     const parsed = Number(raw);
     if (raw === "" || !Number.isFinite(parsed)) {
-      if (from !== "slider") slider.value = String(Math.min(SLIDER_MAX, multiplierFor(action.Key)));
-      if (from !== "number") num.value = String(multiplierFor(action.Key));
+      slider.value = String(Math.min(SLIDER_MAX, multiplierFor(action.Key)));
+      num.value = String(multiplierFor(action.Key));
       return;
     }
     const v = parsed < 0 ? 1 : Math.min(state.maxMultiplier, parsed);
@@ -421,7 +424,10 @@ function syncGroupControl(skill) {
   if (!slider || !readout || !btn) return;
 
   const rows = groupRows(skill);
-  const values = rows.map((r) => multiplierFor(r._key));
+  // Agreement is judged on the rows the filter shows: the bulk drivers only touch those, so judging
+  // hidden rows too would claim "mixed" for a set the header can actually drive as one.
+  const visible = rows.filter((r) => !r.hidden);
+  const values = visible.map((r) => multiplierFor(r._key));
   const agree = values.length > 0 && values.every((v) => Math.abs(v - values[0]) < 1e-9);
   const linked = agree && !state.unlinked[skill];
 
@@ -492,6 +498,12 @@ function renderGroupControl(skill, group) {
   };
 
   const flushPending = () => {
+    // Detached-slider guard: flushers die with render(), but never trust a closure over a node that
+    // may not be in the document.
+    if (!document.contains(slider)) {
+      pendingGroups.delete(skill);
+      return;
+    }
     if (!pendingGroups.has(skill)) return;
     applyToRows(clampMult(slider.value));
   };
@@ -504,6 +516,15 @@ function renderGroupControl(skill, group) {
     readout.value = String(v);
     pendingGroups.add(skill);
     markDirty(true);
+    // The commit-time red border only sees stored rows, so a mid-drag 0x would show no warning until
+    // release: mirror the verdict onto this header from the preview value plus the stored rest.
+    const host = document.querySelector(`.skill[data-skill="${CSS.escape(skill)}"]`);
+    if (host) {
+      const previewZero =
+        v === 0 || groupRows(skill).some((r) => !r.hidden && multiplierFor(r._key) === 0);
+      host.classList.toggle("has-zero", previewZero);
+      host.title = previewZero ? "Contains a 0x multiplier: that action grants no XP at all." : "";
+    }
   });
 
   slider.addEventListener("change", () => {
@@ -512,11 +533,12 @@ function renderGroupControl(skill, group) {
   });
 
   // Esc abandons the preview: restore the header to the stored rows instead of showing a number
-  // nothing holds.
+  // nothing holds - including the zero verdict, which recomputes from stored rows only.
   slider.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && pendingGroups.has(skill)) {
       pendingGroups.delete(skill);
       syncGroupControl(skill);
+      refreshZero();
     }
   });
 
@@ -554,7 +576,9 @@ function renderGroupControl(skill, group) {
 }
 
 function groupAgree(skill) {
-  const rows = groupRows(skill);
+  // Same set the header judges and the bulk drivers touch: visible rows only. Judging hidden rows too
+  // made Unlink unreachable exactly when a filter hid a disagreement.
+  const rows = visibleGroupRows(skill);
   if (!rows.length) return true;
   const values = rows.map((r) => multiplierFor(r._key));
   return values.every((v) => Math.abs(v - values[0]) < 1e-9);
@@ -565,6 +589,10 @@ function render() {
   host.textContent = "";
   pendingGroups.clear();
   pendingFlushers.clear();
+  // Previews die with the old headers, so the dirty flag dies with them: keeping it would offer to
+  // save rows that no longer show anything unsaved. (Migration reload already refuses to load while
+  // dirty; this covers any other path that rebuilds mid-preview.)
+  markDirty(false);
 
   for (const group of state.groups) {
     const skill = document.createElement("details");
@@ -768,6 +796,14 @@ function applyFilter() {
     }
     block.hidden = !anyVisible;
   }
+
+  // Filtering changes which rows each group header speaks for: resync every header so link state and
+  // readouts reflect the newly visible set rather than the pre-filter one. Groups with a mid-drag
+  // preview are skipped, not resynced: resyncing would reset the slider from still-stale rows and
+  // destroy the preview while the pending bit still claims it.
+  for (const group of state.groups) {
+    if (!pendingGroups.has(group.Skill)) syncGroupControl(group.Skill);
+  }
 }
 
 async function load() {
@@ -835,14 +871,18 @@ async function load() {
 // state rather than in the multipliers map because it is a separate compounding number, not a row value.
 function setGlobal(value, from) {
   // Same refusal as the rows: an empty or non-numeric box reports "" (a number input never yields
-  // "nan" as its value), and Number("") is 0 - which used to store global 0.00x live. Revert instead.
+  // "nan" as its value), and Number("") is 0 - which used to store global 0.00x live. Both controls
+  // revert to the stored value, including the box holding the rejected text.
   const raw = typeof value === "string" ? value.trim() : value;
   const parsed = Number(raw);
   const slider = $("#globalSlider");
   const num = $("#globalNumber");
+  // Static shell nodes; guarded anyway so a page variant missing one throws nothing inside an input
+  // handler. The reject path below writes both elements, which widened this from cosmetic to load-bearing.
+  if (!slider || !num) return;
   if (raw === "" || !Number.isFinite(parsed)) {
-    if (from !== "slider") slider.value = String(Math.min(SLIDER_MAX, state.globalMultiplier));
-    if (from !== "number") num.value = String(state.globalMultiplier);
+    slider.value = String(Math.min(SLIDER_MAX, state.globalMultiplier));
+    num.value = String(state.globalMultiplier);
     return;
   }
   const v = parsed < 0 ? 1 : Math.min(state.maxMultiplier, parsed);
@@ -860,6 +900,7 @@ function setGlobal(value, from) {
 function refreshGlobal() {
   const slider = $("#globalSlider");
   const num = $("#globalNumber");
+  if (!slider || !num) return;
   slider.max = String(SLIDER_MAX);
   slider.value = String(Math.min(SLIDER_MAX, state.globalMultiplier));
   num.max = String(state.maxMultiplier);
@@ -1048,7 +1089,13 @@ async function save() {
 }
 
 async function resetAll() {
-  if (state.multipliers.size && !confirm("Reset every multiplier to 1.00x?")) return;
+  // Global-only tuning leaves the map empty, so the map alone cannot decide whether anything would
+  // be lost: a bare global change still deserves the question.
+  if (
+    (state.multipliers.size > 0 || Math.abs(state.globalMultiplier - 1) > 1e-9) &&
+    !confirm("Reset every multiplier to 1.00x?")
+  )
+    return;
 
   try {
     const res = await apiFetch(API.reset, {

@@ -197,10 +197,16 @@ public sealed class SkillMultiplierWsHandler(
     /// <summary>Returns false for a socket that is closed or faulted, so the caller can report a real count.</summary>
     private async Task<bool> SendToAsync(Connection connection, byte[] payload)
     {
-        await connection.SendGate.WaitAsync();
+        // The wait sits inside the try with acquisition tracked: OnClose disposes this gate, and a
+        // broadcast snapshot taken just before the close would otherwise throw ObjectDisposedException
+        // out of the wait and kill the whole broadcast loop for the remaining connections.
+        var acquired = false;
 
         try
         {
+            await connection.SendGate.WaitAsync();
+            acquired = true;
+
             if (connection.Socket.State != WebSocketState.Open)
             {
                 return false;
@@ -209,15 +215,34 @@ public sealed class SkillMultiplierWsHandler(
             await connection.Socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, CancellationToken.None);
             return true;
         }
+        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            // A dropped client is normal (game closed, raid transition, lost race with a disconnect).
+            // Never let it take down a save, and never let one dead socket stop the push to the rest.
+            logger.Debug($"[SkillMultiplier] Websocket send failed: {ex.Message}");
+            return false;
+        }
         catch (Exception ex)
         {
-            // A dropped client is normal (game closed, raid transition). Never let it take down a save.
-            logger.Debug($"[SkillMultiplier] Websocket send failed: {ex.Message}");
+            // Unexpected: not a dead socket but something genuinely wrong with the send. Loud, with the
+            // full exception - a bare message here would be indistinguishable from a routine drop.
+            logger.Warning($"[SkillMultiplier] Unexpected websocket send failure: {ex}");
             return false;
         }
         finally
         {
-            connection.SendGate.Release();
+            if (acquired)
+            {
+                try
+                {
+                    connection.SendGate.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Lost the race with OnClose's dispose after a successful wait: the send is done,
+                    // the gate is gone, and there is nothing left to release.
+                }
+            }
         }
     }
 }

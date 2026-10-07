@@ -210,8 +210,9 @@ internal sealed class LegacyMigrator(
 
         // A value typed on the page wins: this fills in what is not already set, it does not impose.
         // Locked inside the store: the only sanctioned in-place write, so it can never tear a
-        // concurrent reader's enumeration.
-        if (store.SetIfAbsent(key, value))
+        // concurrent reader's enumeration. Clamped like any hand-entered value, so a corrupt legacy
+        // file cannot plant a negative or absurd row (the client migration turns negatives into 0).
+        if (store.SetIfAbsent(key, Math.Clamp(value, 0.0, SkillMultiplierMod.MaxMultiplier)))
         {
             migrated.Add($"{key} = {value}");
         }

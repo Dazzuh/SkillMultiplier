@@ -12,11 +12,11 @@ namespace SkillMultiplier.Patches;
 /// curve, read from the deployed <c>Assembly-CSharp.dll</c>, is:
 /// </para>
 /// <code>
-/// points &lt; SkillFreshPoints (1)                     -> SkillFreshEffectiveness      (1.3)
-/// points &lt; SkillFreshPoints + SkillPointsBeforeFatigue -> 1.0                        (1 + 1 = 2)
+/// points &lt; SkillFreshPoints (1)                     -> SkillFreshEffectiveness      (1.2)
+/// points &lt; SkillFreshPoints + SkillPointsBeforeFatigue -> 1.0                        (1 + 2 = 3)
 /// otherwise                                           -> max(SkillMinEffectiveness,
-///                                                            SkillFatiguePerPoint ^ (1 + points - 2))
-///                                                                                     (0.6 ^ (points - 1))
+///                                                            SkillFatiguePerPoint ^ (1 + points - 3))
+///                                                                                     (0.5 ^ (points - 2))
 /// </code>
 /// <para>
 /// The previous implementation of this option - inherited from the mod this replaces - post-fixed
@@ -34,7 +34,7 @@ namespace SkillMultiplier.Patches;
 /// them display code, so nothing shown in the UI changes.
 /// </para>
 /// <para>
-/// The floor is <c>max(1, result)</c> and not a flat 1: <c>SkillFreshEffectiveness</c> (1.3) is a
+/// The floor is <c>max(1, result)</c> and not a flat 1: <c>SkillFreshEffectiveness</c> (1.2) is a
 /// <em>bonus</em> for the first point of a session, and removing fatigue should not also remove it.
 /// </para>
 /// <para>

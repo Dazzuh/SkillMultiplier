@@ -656,38 +656,44 @@ public sealed class SkillMultiplierRouterCallback(
             // so an overlapping save would lose either the migration or the save.
             await mod.SaveGate.WaitAsync();
 
+            bool changed;
+            bool doMigrate = migrate;
+
             try
             {
-                var changed = migrate ? mod.RunLegacyMigration() : mod.DeclineLegacyMigration();
+                changed = doMigrate ? mod.RunLegacyMigration() : mod.DeclineLegacyMigration();
 
-                if (!changed)
+                if (changed)
                 {
-                    return httpResponseUtil.NoBody(new SaveResult
-                    {
-                        Saved = true,
-                        Message = "Nothing to migrate: the previous release's settings are already gone.",
-                    });
+                    mod.Apply();
+                    mod.SaveConfig();
+                    // The pushed table changed without the config doing so: bump, or clients holding the
+                    // old revision ignore the migrated table as not-newer.
+                    mod.BumpRevision();
+                    await wsHandler.BroadcastAsync();
                 }
-
-                mod.Apply();
-                mod.SaveConfig();
-                // The pushed table changed without the config doing so: bump, or clients holding the
-                // old revision ignore the migrated table as not-newer.
-                mod.BumpRevision();
-                await wsHandler.BroadcastAsync();
-
-                var message = migrate
-                    ? "Migrated the previous release's server settings. Restart the game to load them."
-                    : "Left the previous release's server settings behind. This won't be asked again.";
-
-                logger.Info($"[SkillMultiplier] {message}");
-
-                return httpResponseUtil.NoBody(new SaveResult { Saved = true, Message = message });
             }
             finally
             {
                 mod.SaveGate.Release();
             }
+
+            if (!changed)
+            {
+                return httpResponseUtil.NoBody(new SaveResult
+                {
+                    Saved = true,
+                    Message = "Nothing to migrate: the previous release's settings are already gone.",
+                });
+            }
+
+            var message = doMigrate
+                ? "Migrated the previous release's server settings. Restart the game to load them."
+                : "Left the previous release's server settings behind. This won't be asked again.";
+
+            logger.Info($"[SkillMultiplier] {message}");
+
+            return httpResponseUtil.NoBody(new SaveResult { Saved = true, Message = message });
         }
 
         if (scope.Equals("client", StringComparison.OrdinalIgnoreCase))
@@ -734,7 +740,95 @@ public sealed class SkillMultiplierRouterCallback(
         // Serialized against overlapping saves BEFORE reading anything: two partial saves that both
         // snapshot the old config and then write serialize into last-writer-wins with a skipped
         // revision. The gate spans clean, replace, apply, persist and broadcast - one critical section.
+        // The try starts immediately: anything below that throws must still release, or every future
+        // save hangs on a leaked semaphore.
         await mod.SaveGate.WaitAsync();
+
+        SaveSummary summary;
+
+        try
+        {
+            if (info is null)
+            {
+                return httpResponseUtil.NoBody(new SaveResult
+                {
+                    Saved = false,
+                    Message = "Empty request: nothing saved.",
+                });
+            }
+
+            summary = await SaveCore(url, info, sessionId, cancellationToken);
+        }
+        finally
+        {
+            mod.SaveGate.Release();
+        }
+
+        // Built outside the gate like Reset does: string formatting and log-sink IO must not hold the
+        // exclusive save/migrate/reset lock - a stalled sink would stall all three pipelines.
+        var message = BuildSaveMessage(summary);
+        logger.Info($"[SkillMultiplier] {message}");
+        return httpResponseUtil.NoBody(new SaveResult { Saved = true, Message = message });
+    }
+
+    /// <summary>What a save did, for the message built after the gate is released.</summary>
+    private sealed record SaveSummary(
+        int Multipliers,
+        int Actions,
+        double Global,
+        int Rejected,
+        List<string> Unknown,
+        int BadActionKeys,
+        List<string> Unreported);
+
+    private static string BuildSaveMessage(SaveSummary summary)
+    {
+        var message = $"Saved {summary.Multipliers} multiplier(s) and {summary.Actions} action multiplier(s).";
+
+        if (Math.Abs(summary.Global - 1.0) > 1e-9)
+        {
+            message += $" Global is {summary.Global:F2}x, live on clients without a restart.";
+        }
+
+        if (summary.Rejected > 0)
+        {
+            message += $" Rejected {summary.Rejected} invalid value(s).";
+        }
+
+        if (summary.Unknown.Count > 0)
+        {
+            message += $" Ignored {summary.Unknown.Count} unknown key(s).";
+        }
+
+        // Reported, not just logged: a key dropped for its shape is a setting the user made that will not
+        // apply, and the message is the only place they would ever find that out.
+        if (summary.BadActionKeys > 0)
+        {
+            message += $" Ignored {summary.BadActionKeys} unrecognised action key(s).";
+        }
+
+        if (summary.Unreported.Count > 0)
+        {
+            message += $" {summary.Unreported.Count} saved action key(s) match nothing any connected game "
+                + "reported - check the spelling if a slider seems to do nothing.";
+        }
+
+        // Only the globals half is read at client startup. Saying "restart the game" unconditionally was
+        // wrong once the client learned to consume the push, and it is wrong the other way when nothing
+        // server-side was touched at all.
+        message += summary.Multipliers > 0
+            ? " Restart the game to load the server-side values; client-side ones are already live."
+            : " Client-side values are already live.";
+
+        return message;
+    }
+
+    private async ValueTask<SaveSummary> SaveCore(
+        string url,
+        SkillMultiplierSaveRequest info,
+        MongoId sessionId,
+        CancellationToken cancellationToken)
+    {
         var savedMaps = mod.SnapshotConfig();
 
         // Omitted maps fall back to the stored ones: the page omits a key space it cannot see (client
@@ -869,71 +963,28 @@ public sealed class SkillMultiplierRouterCallback(
         // untouched: the page cannot see them, so answering them stays the popup's job.
         var legacy = mod.LegacySnapshot();
 
-        // The gate was acquired up front; everything below runs inside its try/finally.
-        try
+        // The gate was acquired up front in Save, whose try/finally owns the single Release: no second
+        // Release here (SemaphoreSlim throws SemaphoreFullException on an unmatched release).
+        // Omitted scalars preserve the stored values, same rule as the maps above.
+        mod.ReplaceConfig(new SkillMultiplierConfig
         {
-            // Omitted scalars preserve the stored values, same rule as the maps above.
-            mod.ReplaceConfig(new SkillMultiplierConfig
-            {
-                Enabled = info.Enabled ?? savedMaps.Enabled,
-                DisableFatigue = info.DisableFatigue ?? savedMaps.DisableFatigue,
-                GlobalMultiplier = global,
-                Multipliers = cleaned,
-                Actions = cleanedActions,
-            });
-            mod.Apply();
-            mod.SaveConfig();
-            mod.RestoreLegacySnapshot(legacy);
+            Enabled = info.Enabled ?? savedMaps.Enabled,
+            DisableFatigue = info.DisableFatigue ?? savedMaps.DisableFatigue,
+            GlobalMultiplier = global,
+            Multipliers = cleaned,
+            Actions = cleanedActions,
+        });
+        mod.Apply();
+        mod.SaveConfig();
+        mod.RestoreLegacySnapshot(legacy);
 
-            // Push to every connected client. The multiplier and the fatigue switch are both applied
-            // client-side, so this lands without a game restart; a client that is not running gets the table
-            // when it next connects.
-            await wsHandler.BroadcastAsync();
-        }
-        finally
-        {
-            mod.SaveGate.Release();
-        }
+        // Push to every connected client. The multiplier and the fatigue switch are both applied
+        // client-side, so this lands without a game restart; a client that is not running gets the table
+        // when it next connects.
+        await wsHandler.BroadcastAsync();
 
-        var message = $"Saved {cleaned.Count} multiplier(s) and {cleanedActions.Count} action multiplier(s).";
-
-        if (Math.Abs(global - 1.0) > 1e-9)
-        {
-            message += $" Global is {global:F2}x, live on clients without a restart.";
-        }
-
-        if (rejected > 0)
-        {
-            message += $" Rejected {rejected} invalid value(s).";
-        }
-
-        if (unknown.Count > 0)
-        {
-            message += $" Ignored {unknown.Count} unknown key(s).";
-        }
-
-        // Reported, not just logged: a key dropped for its shape is a setting the user made that will not
-        // apply, and the message is the only place they would ever find that out.
-        if (badActionKeys > 0)
-        {
-            message += $" Ignored {badActionKeys} unrecognised action key(s).";
-        }
-
-        if (unreportedActionKeys.Count > 0)
-        {
-            message += $" {unreportedActionKeys.Count} saved action key(s) match nothing any connected game "
-                + "reported - check the spelling if a slider seems to do nothing.";
-        }
-
-        // Only the globals half is read at client startup. Saying "restart the game" unconditionally was
-        // wrong once the client learned to consume the push, and it is wrong the other way when nothing
-        // server-side was touched at all.
-        message += cleaned.Count > 0
-            ? " Restart the game to load the server-side values; client-side ones are already live."
-            : " Client-side values are already live.";
-
-        logger.Info($"[SkillMultiplier] {message}");
-        return httpResponseUtil.NoBody(new SaveResult { Saved = true, Message = message });
+        return new SaveSummary(
+            cleaned.Count, cleanedActions.Count, global, rejected, unknown, badActionKeys, unreportedActionKeys);
     }
 
     public async ValueTask<string> Reset(string url, MongoId sessionId, CancellationToken cancellationToken)

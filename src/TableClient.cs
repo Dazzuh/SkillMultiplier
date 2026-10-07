@@ -275,8 +275,12 @@ internal static class TableClient
 
             lock (Gate)
             {
-                // A push that is not newer is either a duplicate or the HTTP fallback racing the socket.
-                if (message.Revision == _revision && _revision >= 0)
+                // A push that is not newer is either a duplicate, the HTTP fallback racing the socket, or
+                // an out-of-order delivery - applying a stale table would regress live multipliers, so
+                // anything at or below the held revision is dropped. (An equal revision with different
+                // content, e.g. a hand-posted table reusing a revision, is dropped too: staleness wins
+                // over freshness here because revisions only ever increase from the server.)
+                if (message.Revision <= _revision && _revision >= 0)
                 {
                     return;
                 }
