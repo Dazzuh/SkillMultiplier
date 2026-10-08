@@ -26,8 +26,8 @@ namespace SkillMultiplier;
 /// Threading contract: the socket and heartbeat threads parse and store pushed data only - they never
 /// touch game objects. Everything that reads the live <c>SkillManager</c> (resolving it, walking action
 /// arrays, reading <c>FactorValue</c> getters, reflective member mapping) runs in
-/// <see cref="DrainMainThread"/>, which only ever executes on the game's main thread via the XP patches'
-/// prefixes. Unity object reads off the main thread are not safe, so background threads request work
+/// <see cref="DrainMainThread"/>, which only ever executes on the game's main thread via <c>Plugin.Update</c>
+/// and the XP patches' prefixes. Unity object reads off the main thread are not safe, so background threads request work
 /// with <see cref="RequestRebuild"/> and the reporter's <c>SendStaged</c> instead of doing it.
 /// </para>
 /// </summary>
@@ -54,7 +54,7 @@ internal static class TableClient
 
     /// <summary>
     /// A rebuild is owed to the game's main thread. Set by the socket thread (each push), the HTTP fallback
-    /// and the heartbeat; cleared by <see cref="DrainMainThread"/> once the game objects have been read.
+    /// and the heartbeat; consumed by <see cref="DrainMainThread"/> before reading the current table.
     /// Starts set so the first profile load builds the map without waiting for a push.
     /// </summary>
     private static volatile bool _rebuildRequested = true;
@@ -155,10 +155,9 @@ internal static class TableClient
                 // off this thread.
                 using var socket = new WebSocketSharp.WebSocket(url);
 
-                // Reserved before connect, published only on success. A failed attempt must change
-                // nothing: no revision reset (the stale-drop guard stays armed across backoff), no
-                // socket publish (the field must never name a dead socket), and the reserved epoch
-                // simply goes unused.
+                // Reserve before connect so replaced sockets are fenced out. A failed handshake leaves
+                // the accepted revision unchanged; OnOpen resets it before this socket delivers tables.
+                // Publish the socket only after the liveness check.
                 int epoch;
 
                 lock (Gate)
@@ -168,6 +167,18 @@ internal static class TableClient
                 }
 
                 socket.SslConfiguration.ServerCertificateValidationCallback = (_, _, _, _) => true;
+                socket.OnOpen += (_, _) =>
+                {
+                    lock (Gate)
+                    {
+                        // websocket-sharp queues messages until OnOpen returns. Reset here, not after
+                        // Connect: a restarted server can immediately push a lower revision.
+                        if (epoch == _epoch)
+                        {
+                            _revision = -1;
+                        }
+                    }
+                };
                 socket.OnMessage += (_, e) =>
                 {
                     if (e.IsText)
@@ -187,14 +198,6 @@ internal static class TableClient
                 lock (Gate)
                 {
                     _socket = socket;
-
-                    // A new live connection may mean a new server epoch: the server resets its revision
-                    // to 1 on every boot and re-pushes its current table on connect. Without this reset a
-                    // client holding a higher revision would drop that re-push as stale and run the old
-                    // table until the next save. Re-applying the same revision after a transient drop is
-                    // harmless (rebuilds are idempotent); a delayed push from the previous socket carries
-                    // its stale epoch and is fenced out in Apply.
-                    _revision = -1;
                 }
 
                 Plugin.DebugLog($"[SkillMultiplier] Connected to the server at {url}.");
@@ -422,15 +425,16 @@ internal static class TableClient
             return;
         }
 
-        // Cleared only on the way out, once the work below is done: an exception anywhere in between
-        // leaves the request set for the next tick instead of silently dropping a rebuild. This also
-        // runs inside Harmony prefixes and Update, so an exception escaping here would propagate into
-        // game code - everything fallible underneath already guards itself, and this is the backstop.
-        // Declared outside so the catch judges the attempted generation, not whatever arrived mid-drain.
+        // Runs inside Harmony prefixes and Update: failures must retry without escaping into game code.
+        // Capture the attempted revision for warning throttling, not whatever arrives mid-drain.
         int revision = -1;
 
         try
         {
+            // Consume before snapshotting the table. A push during the work re-arms this flag, and
+            // success must not clear that newer request. Failure re-arms it in the catch below.
+            _rebuildRequested = false;
+
             // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
             // with what the server is being told, and requiring a debug flag to see it makes that evidence
             // unavailable exactly when a mapping surprise needs explaining.
@@ -478,14 +482,14 @@ internal static class TableClient
             var described = ActionCatalog.Describe(manager);
             LegacyConfig.OfferDescribed(described);
             ClientCatalogReporter.StageForSend(described);
-
-            _rebuildRequested = false;
         }
         catch (Exception ex)
         {
+            RequestRebuild();
+
             // Once per revision, not once per frame: a deterministically-throwing drain rides the 60Hz
-            // Update pump, and per-frame warnings would bury the log. The flag stays set either way, so a
-            // transient failure still retries next tick. Judged on the generation this drain attempted,
+            // Update pump, and per-frame warnings would bury the log. The request is re-armed so a
+            // transient failure retries next tick. Judge the revision this drain attempted,
             // not whatever arrived mid-drain.
             if (revision != _warnedRevision)
             {

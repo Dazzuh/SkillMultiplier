@@ -128,6 +128,9 @@ which keep their own values so a bulk change cannot set both sides of a duplicat
 
 A save reaches a running game even mid-raid. Either way it only affects future XP: points already
 earned are untouched.
+Changes arriving while the client rebuilds its action map stay pending for the next rebuild.
+After a server restart, reconnecting accepts the server's initial table even when its revision
+counter has restarted.
 
 ## Upgrading from 1.x
 
