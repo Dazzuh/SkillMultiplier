@@ -1,3 +1,5 @@
+> Shared workspace rules: `../AGENTS.md` (the workspace root, one level above this repo) — read it first; this file takes precedence on conflict.
+
 # SkillMultiplier — agent pipeline
 
 Two halves, one repo: `src/` (BepInEx client, netstandard2.1) + `SkillMultiplier-server/`
