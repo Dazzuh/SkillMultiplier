@@ -48,23 +48,23 @@ if ($LASTEXITCODE -ne 0) { throw 'client build failed' }
 if (-not (Test-Path $pluginSource)) { throw "no built client at $pluginSource" }
 if (-not (Test-Path $serverSource)) { throw "no built server at $serverSource" }
 
-# Get version from csproj
-$csprojPath = Join-Path $srcDir "SkillMultiplier.csproj"
-[xml]$csprojXml = Get-Content $csprojPath
-$version = $csprojXml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1
-if ($version) {
-    $version = $version.Trim()
-} else {
-    $version = "unknown"
-}
+# Single source of truth: Directory.Build.props at the repo root. Both halves inherit it, and the
+# server's ModMetadata reads it back out of the built assembly, so a skew is impossible by
+# construction - which makes the local re-declaration the only way it can come back.
+$propsPath = Join-Path $projectDir "Directory.Build.props"
+if (-not (Test-Path $propsPath)) { throw "no version source at $propsPath" }
+[xml]$propsXml = Get-Content $propsPath
+$version = $propsXml.Project.PropertyGroup.Version
+if (-not $version) { throw "Directory.Build.props declares no Version" }
+$version = $version.Trim()
 
-# Both halves ship one version: refuse a skew where the zip name says one thing
-# and a half says another.
-$serverCsprojPath = Join-Path $serverDir 'SkillMultiplier-server.csproj'
-[xml]$serverCsprojXml = Get-Content $serverCsprojPath
-$serverVersion = $serverCsprojXml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1
-if ($serverVersion -and $serverVersion.Trim() -ne $version) {
-    throw "version skew: client says $version, server says $($serverVersion.Trim()). Align them before releasing."
+# Guard the consolidation: a <Version> inside either half would silently shadow the shared one,
+# and the two halves would then be free to drift apart again.
+foreach ($csproj in @((Join-Path $srcDir "SkillMultiplier.csproj"), (Join-Path $serverDir "SkillMultiplier-server.csproj"))) {
+    [xml]$halfXml = Get-Content $csproj
+    if ($halfXml.Project.PropertyGroup | Where-Object { $_.Version }) {
+        throw "$csproj declares its own Version - remove it and let Directory.Build.props own it"
+    }
 }
 
 $zipName = "SkillMultiplier-$version.zip"

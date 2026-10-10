@@ -1,0 +1,37 @@
+<Project>
+
+  <!-- The mod's version lives here and nowhere else. A release bumps this one value.
+       Four consumers read it: the two assemblies' version stamps, the server's ModMetadata
+       (SPT's mod loader shows it), and the client's BepInPlugin attribute - and the last two are
+       C# attribute arguments, which must be compile-time constants, so the constant is generated
+       below rather than repeated. Stamp strings are exact so every surface reads "2.1.2": no
+       trailing ".0", no SourceLink commit suffix. -->
+  <PropertyGroup>
+    <Version>2.1.2</Version>
+    <AssemblyVersion>2.1.2</AssemblyVersion>
+    <FileVersion>2.1.2</FileVersion>
+    <InformationalVersion>2.1.2</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!-- Outside the target on purpose. The generation target is incremental (Inputs/Outputs), so on
+       an up-to-date build it never runs; an item declared inside it would be skipped with it and
+       any use of VersionInfo would fail to compile. Declared here it is always in the compile set. -->
+  <ItemGroup>
+    <Compile Include="$(IntermediateOutputPath)VersionInfo.g.cs" />
+  </ItemGroup>
+
+  <!-- %3B is MSBuild's escape for a literal semicolon: WriteLinesToFile splits an unescaped ';'
+       into separate lines, which turns the generated code into a syntax error. -->
+  <Target Name="GenerateVersionInfo"
+          BeforeTargets="CoreCompile"
+          Inputs="$(MSBuildThisFileFullPath)"
+          Outputs="$(IntermediateOutputPath)VersionInfo.g.cs">
+    <ItemGroup>
+      <_VersionLine Include="// Generated from $(Version) by Directory.Build.props. Do not edit%3B bump the Version there." />
+      <_VersionLine Include="namespace SkillMultiplier { internal static class VersionInfo { public const string Version = &quot;$(Version)&quot;%3B } }" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)VersionInfo.g.cs" Lines="@(_VersionLine)" Overwrite="true" />
+  </Target>
+
+</Project>

@@ -14,7 +14,6 @@
         <Nullable>enable</Nullable>
         <OutputType>Library</OutputType>
         <ModAuthor>Dazzuh</ModAuthor>
-        <Version>2.1.2</Version>
         <OutputPath>bin\$(Configuration)\$(ProjectName)\$(AssemblyName)\</OutputPath>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     </PropertyGroup>

@@ -20,7 +20,7 @@ namespace SkillMultiplier;
 /// <see cref="SkillOnTriggerPatch"/>.
 /// </para>
 /// </summary>
-[BepInPlugin(Guid, "SkillMultiplier", "2.1.1")]
+[BepInPlugin(Guid, "SkillMultiplier", VersionInfo.Version)]
 public class Plugin : BaseUnityPlugin
 {
     /// <summary>

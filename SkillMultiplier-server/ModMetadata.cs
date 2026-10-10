@@ -53,7 +53,7 @@ public record ModMetadata : IModMetadata, IModBlazorMetadata
     /// MAJOR for breaking changes, MINOR for backwards-compatible features,
     /// and PATCH for backwards-compatible bug fixes.
     /// </summary>
-    public SemanticVersioning.Version Version { get; init; } = new("2.1.1");
+    public SemanticVersioning.Version Version { get; init; } = new(VersionInfo.Version);
 
     /// <summary>
     /// The range of SPT versions supported by this mod.
