@@ -4,11 +4,11 @@ The things 2.1.1 promised now hold up in a raid.
 
 ## XP and the gym
 
-**Server-paid XP follows your rows again.** Repairs, crafting and hideout XP were all scaled
-through one guard, so skills whose XP is genuinely computed from scaled values were protected
-correctly while everything else was left at vanilla. Repair Intellect and its kin paid vanilla
-against their own rows; they no longer do. Crafting and Hideout Management are still left alone,
-because for them the double-scaling was real.
+**Server-paid XP follows your rows again.** A single guard decided whether a skill's grant got
+scaled, and it suppressed too much: skills whose XP is genuinely computed from scaled values were
+protected correctly, while everything else was left at vanilla. Repair Intellect and its kin paid
+vanilla against their own rows; they no longer do. Crafting and Hideout Management are still left
+alone, because for them the double-scaling was real.
 
 **Rows that disagree by a rounding error no longer read as a conflict.** A hand-edited file
 holding 2.0 and 2.0000001 now counts as one value, so the grant scales instead of being skipped.
