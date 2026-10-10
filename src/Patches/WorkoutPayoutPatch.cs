@@ -24,13 +24,17 @@ internal class WorkoutSkillMemoryPatch : ModulePatch
 
     protected override MethodBase GetTargetMethod()
     {
+        // Fail fast, not cryptic: without the skill memory the gym cannot know which row pays, so a
+        // game update that renames this method must surface here at startup rather than as a silent
+        // no-op with a vanilla gym.
         return typeof(SkillManager).GetMethod(
             "GetSkill",
             BindingFlags.Instance | BindingFlags.Public,
             null,
             new[] { typeof(ESkillId) },
             null
-        );
+        ) ?? throw new InvalidOperationException(
+            "SkillManager.GetSkill(ESkillId) was not found - check the supported game version.");
     }
 
     [PatchPostfix]
@@ -47,14 +51,21 @@ internal class WorkoutSkillMemoryPatch : ModulePatch
 
     /// <summary>
     /// The skill the current workout is paying. Only meaningful while
-    /// <see cref="WorkoutExperiencePatch.InWorkout"/> is set; a stale value from the previous workout is
-    /// harmless, because the workout fetches its skill again before it asks for a payout.
+    /// <see cref="WorkoutExperiencePatch.InWorkout"/> is set; the value is forgotten in the workout
+    /// finalizer, so a stale skill from a previous workout can never leak into the next one.
     /// </summary>
     internal static bool TryGet(out ESkillId skill)
     {
         skill = _skill;
         return _known;
     }
+
+    /// <summary>
+    /// Forget the remembered skill. Called when a workout ends: without this a reward-less workout leaves
+    /// a stale skill behind, and the next workout could scale by the wrong skill's row if its payout runs
+    /// before a fresh <c>GetSkill</c>.
+    /// </summary>
+    internal static void Forget() => _known = false;
 }
 
 /// <summary>
@@ -77,13 +88,16 @@ internal class WorkoutPayoutPatch : ModulePatch
 {
     protected override MethodBase GetTargetMethod()
     {
+        // Fail fast, not cryptic: a game update that changes this overload must surface here at startup,
+        // naming the expected signature, rather than as a silent no-op with a vanilla gym.
         return typeof(SkillManager.SkillAction).GetMethod(
             "Factor",
             BindingFlags.Instance | BindingFlags.Public,
             null,
             new[] { typeof(float), typeof(bool) },
             null
-        );
+        ) ?? throw new InvalidOperationException(
+            "SkillManager.SkillAction.Factor(float, bool) was not found - check the supported game version.");
     }
 
     [PatchPostfix]
@@ -94,16 +108,25 @@ internal class WorkoutPayoutPatch : ModulePatch
             return;
         }
 
+        if (!Plugin.Enabled.Value)
+        {
+            return;
+        }
+
         if (!WorkoutSkillMemoryPatch.TryGet(out var skillId))
         {
             return;
         }
 
-        if (
-            !Plugin.Multipliers.TryGetValue((skillId, WorkoutExperiencePatch.WorkoutIndex), out var multiplier)
-        )
+        // Default 1.0 so a global-only change still reaches the gym: mirrors SkillOnTriggerPatch, where
+        // the row defaults the same way and the global compounds on top. Returning only when both are 1
+        // keeps the two taps in agreement and matches the UI math column. (TryGetValue writes default(float)
+        // into out on a miss, so the row goes through a temp instead of doubling as the default.)
+        var multiplier = 1f;
+
+        if (Plugin.Multipliers.TryGetValue((skillId, WorkoutExperiencePatch.WorkoutIndex), out var row))
         {
-            return;
+            multiplier = row;
         }
 
         var global = Plugin.GlobalMultiplier;
@@ -116,9 +139,12 @@ internal class WorkoutPayoutPatch : ModulePatch
         var vanilla = __result.FactorValue;
         __result.FactorValue = vanilla * multiplier * global;
 
-        Plugin.DebugLog(
-            $"[SkillMultiplier] {skillId} workout payout shown as {__result.FactorValue} "
-                + $"({vanilla} x{multiplier} x{global})."
-        );
+        if (Plugin.IsDebugEnabled)
+        {
+            Plugin.DebugLog(
+                $"[SkillMultiplier] {skillId} workout payout shown as {__result.FactorValue} "
+                    + $"({vanilla} x{multiplier} x{global})."
+            );
+        }
     }
 }

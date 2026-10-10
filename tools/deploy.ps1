@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory, HelpMessage = 'Path to the SPT install to deploy into (the folder holding EscapeFromTarkov.exe)')]
     [string]$SPTDir,
+    [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release'
 )
 
@@ -44,7 +45,7 @@ if ($server) {
 
 $proj = Join-Path $repo 'SkillMultiplier-server\SkillMultiplier-server.csproj'
 Write-Host "Building $proj ($Configuration)"
-dotnet build $proj -c $Configuration -p:SPTRuntimeDir="$runtime"
+dotnet build "$proj" -c "$Configuration" -p:SPTRuntimeDir="$runtime"
 if ($LASTEXITCODE -ne 0) { throw 'server build failed' }
 
 $out = Join-Path $repo "SkillMultiplier-server\bin\$Configuration\SkillMultiplier-server"
@@ -72,6 +73,13 @@ if ((Get-FileHash $dll).Hash -ne (Get-FileHash (Join-Path $dest 'SkillMultiplier
     throw "The deployed server assembly is not the one just built: $dest\SkillMultiplier-server.dll"
 }
 
+# The page has no compiler watching it: prove the deployed copy is the built one, not a stale file.
+$builtJs = Join-Path $out 'wwwroot\app.js'
+$deployedJs = Join-Path $dest 'wwwroot\app.js'
+if ((Get-FileHash $builtJs).Hash -ne (Get-FileHash $deployedJs).Hash) {
+    throw "The deployed page is not the one just built: $deployedJs"
+}
+
 # config.json is the user's file. Only seed it when absent, so a deploy never wipes their tuning - and on
 # first load the server migrates the previous release's fields out of it.
 $cfg = Join-Path $dest 'config.json'
@@ -90,7 +98,7 @@ Write-Host "Deployed the server half to $dest"
 
 $clientProj = Join-Path $repo 'src\SkillMultiplier.csproj'
 Write-Host "Building $clientProj ($Configuration)"
-dotnet build $clientProj -c $Configuration -p:SPTDir="$SPTDir"
+dotnet build "$clientProj" -c "$Configuration" -p:SPTDir="$SPTDir"
 if ($LASTEXITCODE -ne 0) { throw 'client build failed' }
 
 $clientDll = Join-Path $repo "src\bin\$Configuration\netstandard2.1\dazzuh.skillmultiplier.dll"

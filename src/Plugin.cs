@@ -40,8 +40,9 @@ public class Plugin : BaseUnityPlugin
     /// array - not by the action object. A raid builds its own <c>SkillManager</c> and its own action
     /// objects, so an instance-keyed map silently stops matching the moment play starts; the skill id and
     /// the index survive that, and they are the same two things the table's keys are written from.
-    /// Volatile for the same reason as <see cref="GlobalMultiplier"/> - written by the table thread,
-    /// read on the game's main thread.
+    /// Volatile because it is published by the main-thread rebuild drain and read by the XP patches on
+    /// that same thread, while background threads replace the reference wholesale - readers always see a
+    /// complete map, never a half-built one.
     /// </summary>
     internal static volatile Dictionary<(EFT.ESkillId Skill, int Index), float> Multipliers = [];
 
@@ -95,6 +96,18 @@ public class Plugin : BaseUnityPlugin
     }
 
     /// <summary>
+    /// Unity calls this every frame on the game's main thread, which makes it the guaranteed pump for
+    /// everything that must read game objects: table rebuilds, catalog staging and migration all drain
+    /// here even in sessions where no XP event ever fires (a pure-hideout session pays Crafting and
+    /// HideoutManagement server-side, so neither XP patch prefix runs there). The flag check first keeps
+    /// the idle cost to one volatile read per frame.
+    /// </summary>
+    private void Update()
+    {
+        TableClient.DrainMainThread();
+    }
+
+    /// <summary>
     /// Unity calls this on quit. The socket is closed and both background loops are told to stop, so none
     /// of them outlive the quit - see <see cref="TableClient.Shutdown"/>. Kept tiny on purpose: this runs on
     /// the game's main thread mid-shutdown, and anything slow here reads as a hang of its own.
@@ -137,9 +150,15 @@ public class Plugin : BaseUnityPlugin
 
     internal static void DebugLog(string message)
     {
-        if (Debug != null && Debug.Value)
+        if (IsDebugEnabled)
         {
             Log.LogMessage(message);
         }
     }
+
+    /// <summary>
+    /// Cheap gate for log lines whose string is built before the call: interpolation runs even when
+    /// debug logging is off, so per-XP-event sites check this first and skip building the string.
+    /// </summary>
+    internal static bool IsDebugEnabled => Debug != null && Debug.Value;
 }

@@ -36,26 +36,36 @@ internal class WorkoutExperiencePatch : ModulePatch
 
     protected override MethodBase GetTargetMethod()
     {
+        // Fail fast, not cryptic: a game update that renames this method must surface here at startup,
+        // naming the expected signature, rather than as a silent no-op with a vanilla gym. Pinned by
+        // parameter types, so a future overload surfaces as "not found" rather than AmbiguousMatch.
         return typeof(WorkoutBehaviour).GetMethod(
             "CalculateExperience",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
-        );
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, Type.EmptyTypes, null
+        ) ?? throw new InvalidOperationException(
+            "WorkoutBehaviour.CalculateExperience (instance) was not found - check the supported game version.");
     }
 
     [PatchPrefix]
     private static void Prefix()
     {
+        // Game thread, like SkillOnTriggerPatch.Prefix: drain a requested rebuild here too, so a table
+        // pushed during a workout-only session still lands without waiting for a raid XP event.
         _inWorkout = true;
+        TableClient.DrainMainThread();
     }
 
     /// <summary>
     /// Cleared in a finalizer rather than a postfix: the method returns early when a workout produced no
     /// reward at all, and a postfix would leave the flag set for whatever runs next on this thread. A
-    /// thread-static field keeps that from reaching another thread in the meantime.
+    /// thread-static field keeps that from reaching another thread in the meantime. The remembered skill
+    /// is cleared too: without this a reward-less workout leaves a stale skill behind for the next one.
     /// </summary>
     [PatchFinalizer]
     private static void Finalizer()
     {
         _inWorkout = false;
+        WorkoutSkillMemoryPatch.Forget();
     }
 }

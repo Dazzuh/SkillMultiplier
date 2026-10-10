@@ -10,6 +10,13 @@ namespace SkillMultiplier;
 /// <summary>
 /// Reads the running client's real action list.
 /// <para>
+/// Threading contract: every member of this class reads live game objects - the <c>SkillManager</c>,
+/// skill <c>Actions</c> arrays, <c>FactorValue</c> getters, and reflected fields and delegates - so every
+/// call must happen on the game's main thread. The only entry point is
+/// <c>TableClient.DrainMainThread</c>, called from the XP patches' prefixes and from
+/// <c>Plugin.Update</c>. Background threads never call in: they set a rebuild flag and consume the
+/// published map.
+/// </para>
 /// This exists because the server's catalog cannot be used for this. The server's keys address numbers in
 /// its own <c>globals</c> tables, and those do not correspond one-to-one with actions: an action's
 /// expression can read several globals fields (Strength's six entries are Min/Max pairs feeding one
@@ -147,14 +154,17 @@ internal static class ActionCatalog
         // whatever else that skill does.
         foreach (var (key, multiplier) in actions)
         {
-            if (multiplier == 1f || key == null || !key.EndsWith("[Workout]", StringComparison.Ordinal))
+            // Case-insensitive on both tests: the table dictionary itself is OrdinalIgnoreCase, so a
+            // hand-posted `strength[workout]` is stored and pushed - dropping it here for case would
+            // silently discard a row the user can see saved.
+            if (multiplier == 1f || key == null || !key.EndsWith("[Workout]", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             var open = key.IndexOf('[');
 
-            if (open > 0 && Enum.TryParse<ESkillId>(key.Substring(0, open), out var workoutSkill))
+            if (open > 0 && Enum.TryParse<ESkillId>(key.Substring(0, open), ignoreCase: true, out var workoutSkill))
             {
                 map[(workoutSkill, SkillMultiplier.Patches.WorkoutExperiencePatch.WorkoutIndex)] = multiplier;
             }

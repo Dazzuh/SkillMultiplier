@@ -1,9 +1,6 @@
 using System.Reflection;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
-using SPTarkov.Reflection.Patching;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers.Server;
 using SPTarkov.Server.Core.Models.Enums;
@@ -16,7 +13,7 @@ namespace SkillMultiplier;
 /// Owns the tuning state and pushes it into the live <see cref="GlobalTable"/>.
 /// <para>
 /// The transformation is expressed as <c>current = base * multiplier</c>, where <c>base</c> is snapshotted
-/// from the in-memory table the first time this runs. That makes <see cref="Apply"/> idempotent: calling it
+/// from the in-memory table the first time this runs. That makes applying idempotent: calling it
 /// ten times is the same as calling it once, so a save cannot compound into runaway XP. It also means the
 /// on-disk <c>globals.json</c> is never written to - the base is re-read from it on every boot, so a game
 /// patch that rebalances a skill is inherited rather than reverted by a stale file.
@@ -32,27 +29,58 @@ namespace SkillMultiplier;
 /// late enough for the database and web host to exist, and early enough to be in place before play.
 /// </para>
 /// <para>
-/// The skill names the client reports are <c>ESkillId</c> names - <c>FieldMedicine</c>, not "Field Medicine".
-/// <see cref="LocaleService"/> holds the game's own locale database, which SPT also merges every mod's locale
-/// entries into, so a real name (and description) is available for any skill that has them - including one
-/// another mod adds. This is presentation only: multipliers stay keyed by the reported id.
+/// Facade since M5: the logic lives in <see cref="ConfigStore"/>, <see cref="GlobalsApplier"/>,
+/// <see cref="ClientReportStore"/>, <see cref="LegacyMigrator"/> and <see cref="SkillRuleEngine"/>. This class
+/// keeps the DI wiring, the startup order, the revision counter, the save gate and the exact public
+/// surface the router, the websocket handler and the grant patch program against. One shared gate object
+/// is passed to the stateful components (<c>ConfigStore</c>, <c>GlobalsApplier</c>,
+/// <c>ClientReportStore</c>, <see cref="SkillRuleEngine"/>) so the mutual exclusion the single
+/// <c>_gate</c> lock used to give is unchanged; the config swap itself stays atomic-reference, and the
+/// revision bump stays <c>Interlocked</c> (eventually consistent with the state it announces).
 /// </para>
 /// </summary>
 [Injectable(InjectionType.Singleton, OnLoadOrder.PostLoad + 1)]
-public sealed class SkillMultiplierMod(
-    ISptLogger<SkillMultiplierMod> logger,
-    ModHelper modHelper,
-    GlobalTable globalTable,
-    LocaleService localeService
-) : IOnLoad
+public sealed class SkillMultiplierMod : IOnLoad
 {
-    private readonly Dictionary<string, double> _base = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ISptLogger<SkillMultiplierMod> _logger;
+    private readonly ModHelper _modHelper;
+    private readonly GlobalTable _globalTable;
+
     private readonly object _gate = new();
 
-    /// <summary>Resolved once, on first use - see <see cref="LocaleValue"/>.</summary>
-    private Dictionary<string, string>? _localeDb;
+    // Constructed here rather than injected so the container graph does not change:
+    // nothing else resolves these types, and the router keeps talking to this facade.
+    private readonly ConfigStore _config;
+    private readonly GlobalsApplier _applier;
+    private readonly ClientReportStore _reports;
+    private readonly LegacyMigrator _legacy;
+    private readonly SkillRuleEngine _rules;
 
-    public SkillMultiplierConfig Config { get; private set; } = new();
+    public SkillMultiplierMod(
+        ISptLogger<SkillMultiplierMod> logger,
+        ModHelper modHelper,
+        GlobalTable globalTable,
+        LocaleService localeService)
+    {
+        _logger = logger;
+        _modHelper = modHelper;
+        _globalTable = globalTable;
+        _config = new ConfigStore(logger, modHelper, _gate);
+        _applier = new GlobalsApplier(logger, _gate);
+        _reports = new ClientReportStore(logger, _gate);
+        _legacy = new LegacyMigrator(logger);
+        _rules = new SkillRuleEngine(logger, localeService, _gate);
+    }
+
+    public SkillMultiplierConfig Config => _config.Config;
+
+    /// <summary>
+    /// One locked read of the whole tuning state for the save path: both maps and the scalars from a
+    /// single generation, so cleaning can never mix a pre-swap map with a post-swap scalar.
+    /// </summary>
+    internal (Dictionary<string, double> Multipliers, Dictionary<string, double> Actions,
+        bool Enabled, bool DisableFatigue, double GlobalMultiplier) SnapshotConfig()
+        => _config.SnapshotAll();
 
     public string ModFolder { get; private set; } = string.Empty;
 
@@ -62,21 +90,38 @@ public sealed class SkillMultiplierMod(
     /// Bumped whenever the effective multiplier set changes, so a pushed table can be recognised as
     /// newer than the one a client already holds.
     /// </summary>
-    public int Revision { get; private set; }
+    public int Revision => Volatile.Read(ref _revision);
+
+    private int _revision;
+
+    /// <summary>Set the revision outright. Only the startup sequence uses this; everything else bumps.</summary>
+    internal void ResetRevision(int value) => Interlocked.Exchange(ref _revision, value);
+
+    /// <summary>
+    /// Serializes overlapping UI saves: the save pipeline (replace, apply, persist, restore, broadcast)
+    /// must not interleave with itself, or two near-simultaneous saves come out last-writer-wins with a
+    /// skipped revision. Held across network IO, so it is a semaphore rather than the in-memory
+    /// shared gate.
+    /// </summary>
+    internal SemaphoreSlim SaveGate { get; } = new(1, 1);
 
     /// <summary>
     /// The page's answer to a game client's legacy config, latched until the server restarts: "migrate"
-    /// or "decline", null while unasked. It rides the pushed table because the client cannot be asked
-    /// any other way - and it latches because a client that connects later gets the same answer rather
-    /// than re-asking. The client's own marker still makes each client act on it once.
+    /// or "decline", null while unasked. Stored in the report store under the shared gate, so a set can
+    /// never race a session drop's clear-check; late-connecting clients get the same answer rather
+    /// than re-asking.
     /// </summary>
-    public volatile string? ClientLegacyRequest;
+    public string? ClientLegacyRequest
+    {
+        get => _reports.LegacyRequest;
+        set => _reports.SetLegacyRequest(value);
+    }
 
     /// <summary>Bump the revision when the pushed table changed without the config doing so.</summary>
-    public void BumpRevision() => Revision++;
+    public void BumpRevision() => Interlocked.Increment(ref _revision);
 
     /// <summary>
-    /// Snapshot copy, taken under the same gate as <see cref="Apply"/>, so a broadcast can never observe
+    /// Snapshot copy, taken under the shared gate, so a broadcast can never observe
     /// a half-replaced multiplier set.
     /// </summary>
     public IReadOnlyDictionary<string, double> Multipliers
@@ -95,164 +140,26 @@ public sealed class SkillMultiplierMod(
     /// reports. Null when the locale has nothing for it, which is the honest answer for a skill that exists
     /// only inside some mod with no locale entries of its own.
     /// </summary>
-    public string? SkillDisplayName(string skillId) => LocaleValue(skillId);
+    public string? SkillDisplayName(string skillId) => _rules.SkillDisplayName(skillId);
 
     /// <summary>
     /// The game's description for a skill, under the <c>&lt;SkillId&gt;Description</c> key it uses for skill
     /// tooltips. Null when it has none.
     /// </summary>
-    public string? SkillDescription(string skillId) => LocaleValue(skillId + "Description");
-
-    /// <summary>
-    /// The base game's skills whose XP the client cannot progress, so nothing client-side can scale them. A
-    /// <c>ClientAuthorizedSkill</c> overrides <c>OnTrigger</c> to log and return without calling base. These
-    /// cannot be discovered without asking, hence listed - see <see cref="ServerOwnedSkills"/> for the rest.
-    /// </summary>
-    private static readonly HashSet<string> ServerOwnedNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Crafting",
-        "HideoutManagement",
-        "WeaponTreatment",
-    };
-
-    /// <summary>
-    /// Skills a connected client has reported as ones its own game refuses to progress locally. Kept as the
-    /// union across sessions rather than per session: the question is whether the client can apply anything to
-    /// the skill at all, and one install that cannot is enough to say its rows are not a duplicate.
-    /// </summary>
-    private readonly HashSet<string> _clientUnauthorized = new(StringComparer.OrdinalIgnoreCase);
+    public string? SkillDescription(string skillId) => _rules.SkillDescription(skillId);
 
     /// <summary>
     /// Every skill the client cannot apply a multiplier to: the names known without asking, plus whatever
     /// connected clients have reported. Read by the catalog build and by the repair patch.
     /// </summary>
-    public HashSet<string> ServerOwnedSkills()
-    {
-        lock (_gate)
-        {
-            return new HashSet<string>(
-                ServerOwnedNames.Concat(_clientUnauthorized),
-                StringComparer.OrdinalIgnoreCase
-            );
-        }
-    }
+    public HashSet<string> ServerOwnedSkills() => _rules.ServerOwnedSkills(_reports.UnauthorizedSnapshot());
 
     /// <summary>
-    /// The multiplier that applies to skill XP the server grants itself, which today is the repair path.
-    /// <para>
-    /// Resolved from the skill's own row, because that is the number a user set: the single value configured
-    /// for that skill, whether it lives in the client's key space (<c>LightVests[0]</c>) or in the server's
-    /// (<c>Settings.WeaponTreatment.SkillPointsPerRepair</c>). The global multiplier rides on top for a skill
-    /// the client can scale, which is exactly what the page's math column shows for that row, and stays out
-    /// for a server-owned skill, which is the same rule the page uses.
-    /// </para>
-    /// <para>
-    /// Null when the skill has no row set, when its rows disagree, or when a row of its own still scales a
-    /// globals value - in that last case the server derives the XP from a number this mod has already scaled,
-    /// and multiplying the grant too would square it. Two different numbers for one skill mean there is no
-    /// single answer, and picking one of them - the first, the largest, their product - would be a guess the
-    /// page cannot show the user. Either way the grant is left at vanilla, and says so once in the log.
-    /// </para>
+    /// The multiplier that applies to skill XP the server grants itself. Null when the skill has no row
+    /// set, when its rows disagree, or when the grant is already covered by value scaling - see
+    /// <see cref="SkillRuleEngine.ServerGrantMultiplier"/>.
     /// </summary>
-    public double? ServerGrantMultiplier(SkillTypes skill)
-    {
-        var skillId = skill.ToString();
-        var values = new HashSet<double>();
-
-        lock (_gate)
-        {
-            if (!Config.Enabled)
-            {
-                return 1.0;
-            }
-
-            foreach (var (key, value) in Config.Actions)
-            {
-                if (key.StartsWith(skillId + "[", StringComparison.OrdinalIgnoreCase))
-                {
-                    values.Add(value);
-                }
-            }
-
-            var coveredByValueScaling = false;
-
-            foreach (var entry in Catalog.All)
-            {
-                if (!entry.Skill.Equals(skillId, StringComparison.OrdinalIgnoreCase)
-                    || !Config.Multipliers.TryGetValue(entry.Key, out var value))
-                {
-                    continue;
-                }
-
-                values.Add(value);
-
-                // A row still scaling a globals value means the server computes this skill's XP from a number
-                // this mod has already scaled. Multiplying the grant as well would square it.
-                if (!entry.AppliedAtServerGrant)
-                {
-                    coveredByValueScaling = true;
-                }
-            }
-
-            if (coveredByValueScaling)
-            {
-                return null;
-            }
-
-            if (values.Count == 0)
-            {
-                return null;
-            }
-
-            if (values.Count > 1)
-            {
-                WarnAboutAmbiguousGrant(skillId, values);
-                return null;
-            }
-
-            var row = values.Single();
-            var global = double.IsNaN(Config.GlobalMultiplier)
-                ? 1.0
-                : Math.Clamp(Config.GlobalMultiplier, 0.0, MaxMultiplier);
-
-            return ServerOwnedNames.Contains(skillId) ? row : row * global;
-        }
-    }
-
-    private readonly HashSet<string> _ambiguousGrantWarned = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Once per skill, not once per repair: a session can hold many repairs and the answer has not changed in
-    /// between, so repeating it would be noise rather than information.
-    /// </summary>
-    private void WarnAboutAmbiguousGrant(string skillId, HashSet<double> values)
-    {
-        if (!_ambiguousGrantWarned.Add(skillId))
-        {
-            return;
-        }
-
-        logger.Warning(
-            $"[SkillMultiplier] {skillId} has {values.Count} different multipliers set "
-            + $"({string.Join(", ", values.OrderBy(v => v))}), so XP the server grants for it is left at "
-            + "vanilla: there is no single number to apply. Set that skill's rows to one value and its repair "
-            + "XP will follow it."
-        );
-    }
-
-    /// <summary>
-    /// A locale lookup, held rather than re-fetched: <see cref="LocaleService.GetLocaleDb"/> merges the locale
-    /// sources into a new dictionary, so calling it per request would rebuild tens of thousands of entries on
-    /// every catalog fetch. The database is complete by the time a request can arrive and does not change after
-    /// that. Two threads racing the assignment is harmless - reference assignment is atomic, and both
-    /// dictionaries are equivalent.
-    /// </summary>
-    private string? LocaleValue(string key)
-    {
-        var db = _localeDb ??= localeService.GetLocaleDb();
-
-        return db.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
-    }
+    public double? ServerGrantMultiplier(SkillTypes skill) => _rules.ServerGrantMultiplier(skill, _config);
 
     /// <summary>
     /// Snapshot copy of the client-keyed action multipliers, pushed to clients. These are applied by the
@@ -271,209 +178,26 @@ public sealed class SkillMultiplierMod(
 
     /// <summary>
     /// The actions connected game clients say they have, keyed <c>SkillId[index]</c>, held per reporting
-    /// session and merged for display.
-    /// <para>
-    /// Advisory by design: the server cannot enumerate these - an action exists only inside the running
-    /// client - so this is a claim, not a contract. A key one client has and another does not is inert on
-    /// the client that lacks it (an unrecognised key is ignored when the table is applied), which is what
-    /// makes a union safe to show for a Fika session where players run different action lists.
-    /// </para>
+    /// session and merged for display. Advisory by design - see <see cref="ClientReportStore"/>.
     /// </summary>
-    public IReadOnlyDictionary<string, ClientActionEntry> ClientActions
-    {
-        get
-        {
-            lock (_gate)
-            {
-                var union = new Dictionary<string, ClientActionEntry>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var session in _clientActionsBySession.Values)
-                {
-                    foreach (var (key, entry) in session)
-                    {
-                        union[key] = entry;
-                    }
-                }
-
-                // Nothing live to go on: fall back to the last report kept on disk, so restarting the server
-                // does not empty the page's client rows. ClientActionsFromCache is what tells the UI not to
-                // read the figures in it as current.
-                if (union.Count == 0 && _cachedReport != null)
-                {
-                    foreach (var action in _cachedReport.Actions)
-                    {
-                        if (!string.IsNullOrWhiteSpace(action.Key))
-                        {
-                            union[action.Key] = action;
-                        }
-                    }
-                }
-
-                return union;
-            }
-        }
-    }
+    public IReadOnlyDictionary<string, ClientActionEntry> ClientActions => _reports.UnionActions();
 
     /// <summary>How many clients have introduced themselves, so the UI can say whether the list is complete.</summary>
-    public int ClientReporterCount
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _clientActionsBySession.Count;
-            }
-        }
-    }
-
-    private readonly Dictionary<string, Dictionary<string, ClientActionEntry>> _clientActionsBySession =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Which sessions' games still hold the previous release's config. Tracked alongside the action lists
-    /// so the page can ask about migrating them; a game config can only be migrated by its game.
-    /// </summary>
-    private readonly Dictionary<string, bool> _clientLegacyBySession = new(StringComparer.OrdinalIgnoreCase);
+    public int ClientReporterCount => _reports.ReporterCount;
 
     /// <summary>Whether any connected game reports a legacy config of its own.</summary>
-    public bool ClientLegacyDetected
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _clientLegacyBySession.Values.Any(detected => detected);
-            }
-        }
-    }
-
-    /// <summary>
-    /// The report kept on disk, or null. Read once at startup and refreshed whenever a client reports.
-    /// <para>
-    /// Display only, deliberately - see <see cref="CachedClientReport"/>. No multiplier is ever derived from
-    /// it, so a wrong cache costs a wrong list, never wrong numbers in the game.
-    /// </para>
-    /// </summary>
-    private CachedClientReport? _cachedReport;
+    public bool ClientLegacyDetected => _reports.LegacyDetected;
 
     /// <summary>When the client list being shown was received. Null while it comes from live clients.</summary>
-    public DateTimeOffset? CachedReportAt => _cachedReport?.CapturedUtc;
+    public DateTimeOffset? CachedReportAt => _reports.CachedReportAt;
 
     /// <summary>
     /// Whether the client rows are coming from the cache rather than from a connected client, so the UI can
     /// say that the observed amounts in them are from a previous session.
     /// </summary>
-    public bool ClientActionsFromCache
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _clientActionsBySession.Count == 0 && _cachedReport != null;
-            }
-        }
-    }
+    public bool ClientActionsFromCache => _reports.ActionsFromCache;
 
     public string ClientReportCachePath => Path.Combine(ModFolder, "clientreport.json");
-
-    private void LoadClientReportCache()
-    {
-        _cachedReport = ClientReportCache.Load(ClientReportCachePath);
-
-        if (_cachedReport != null)
-        {
-            logger.Info(
-                $"[SkillMultiplier] Client actions restored from a kept report: {_cachedReport.Actions.Count} "
-                + $"action(s) captured {_cachedReport.CapturedUtc:u}."
-            );
-        }
-    }
-
-    /// <summary>Keep the current client list, so the next boot starts with it instead of an empty page.</summary>
-    private void SaveClientReportCache()
-    {
-        Dictionary<string, ClientActionEntry> union;
-        int reporters;
-
-        lock (_gate)
-        {
-            reporters = _clientActionsBySession.Count;
-            union = new Dictionary<string, ClientActionEntry>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var session in _clientActionsBySession.Values)
-            {
-                foreach (var (key, entry) in session)
-                {
-                    union[key] = entry;
-                }
-            }
-        }
-
-        if (union.Count == 0)
-        {
-            return;
-        }
-
-        var snapshot = new CachedClientReport
-        {
-            CapturedUtc = DateTimeOffset.UtcNow,
-            Reporters = reporters,
-            Actions = [.. union.Values],
-        };
-
-        _cachedReport = snapshot;
-
-        try
-        {
-            ClientReportCache.Save(ClientReportCachePath, snapshot);
-        }
-        catch (Exception ex)
-        {
-            // Losing the cache costs a refresh after the next restart; failing here would cost the report.
-            logger.Warning($"[SkillMultiplier] Could not keep the client report: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Discard the kept report when an arriving one describes a different set of actions.
-    /// <para>
-    /// The keys are positions in each client's own action arrays, so a client that gains or loses a mod's
-    /// actions shifts them and the same key can mean a different action. Keeping old names and observed
-    /// amounts across that would attribute them to the wrong rows, so the cache goes rather than being merged.
-    /// </para>
-    /// </summary>
-    private void DropCacheIfKeySetsDisagree(IReadOnlyDictionary<string, ClientActionEntry> reported)
-    {
-        var cached = _cachedReport;
-
-        if (cached == null)
-        {
-            return;
-        }
-
-        var cachedKeys = cached.Actions.Select(action => action.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        if (cachedKeys.SetEquals(reported.Keys))
-        {
-            return;
-        }
-
-        _cachedReport = null;
-
-        try
-        {
-            ClientReportCache.Delete(ClientReportCachePath);
-        }
-        catch (Exception ex)
-        {
-            logger.Warning($"[SkillMultiplier] Could not discard the kept client report: {ex.Message}");
-        }
-
-        logger.Info(
-            $"[SkillMultiplier] The client's action list changed ({cachedKeys.Count} kept, {reported.Count} "
-            + "reported), so the kept names and observed amounts were discarded rather than merged."
-        );
-    }
 
     /// <summary>
     /// Record one client's action list. A re-report replaces that client's previous set rather than adding
@@ -481,54 +205,42 @@ public sealed class SkillMultiplierMod(
     /// </summary>
     public void ReportClientActions(IEnumerable<ClientActionEntry> actions, string sessionId, bool legacyDetected)
     {
-        var reported = new Dictionary<string, ClientActionEntry>(StringComparer.OrdinalIgnoreCase);
-        var unauthorized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var action in actions)
+        if (_reports.Report(actions, sessionId, legacyDetected))
         {
-            if (!string.IsNullOrWhiteSpace(action.Key))
-            {
-                reported[action.Key] = action;
-            }
+            Interlocked.Increment(ref _revision);
+        }
+    }
 
-            // A skill this client's own game will not progress locally. Its rows exist and are settable, but
-            // the client can never apply them - see ServerOwnedSkills.
-            if (action.ServerAuthoritative && !string.IsNullOrWhiteSpace(action.Skill))
-            {
-                unauthorized.Add(action.Skill);
-            }
+    /// <summary>
+    /// Forget one session's report when its socket closes. Without this a disconnected client's entries
+    /// linger: a departed legacy client would pin <see cref="ClientLegacyRequest"/> and a departed action
+    /// list would outlive its game.
+    /// Returns true when the migration latch was cleared and the caller must push the new table.
+    /// </summary>
+    public bool DropClientSession(string sessionId)
+    {
+        if (_reports.DropSession(sessionId))
+        {
+            Interlocked.Increment(ref _revision);
+            return true;
         }
 
-        DropCacheIfKeySetsDisagree(reported);
-
-        lock (_gate)
-        {
-            _clientActionsBySession[sessionId] = reported;
-            _clientLegacyBySession[sessionId] = legacyDetected;
-
-            foreach (var skill in unauthorized)
-            {
-                _clientUnauthorized.Add(skill);
-            }
-        }
-
-        logger.Info($"[SkillMultiplier] Client {sessionId} reported {reported.Count} tunable action(s).");
-
-        SaveClientReportCache();
+        return false;
     }
 
     public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        ModFolder = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
+        ModFolder = _modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
 
         LoadConfig();
-        LoadClientReportCache();
+        _reports.CachePath = ClientReportCachePath;
+        _reports.LoadCache();
         CaptureBase();
         Apply();
-        Revision = 1;
+        ResetRevision(1);
 
-        logger.Success(
-            $"[SkillMultiplier] Loaded. {Catalog.All.Count} tunable action(s), {_base.Count} base value(s) captured. "
+        _logger.Success(
+            $"[SkillMultiplier] Loaded. {Catalog.All.Count} tunable action(s), {_applier.BaseCount} base value(s) captured. "
             + $"Config: {ConfigPath}"
         );
 
@@ -539,47 +251,13 @@ public sealed class SkillMultiplierMod(
 
     private void LoadConfig()
     {
-        try
-        {
-            if (File.Exists(ConfigPath))
-            {
-                Config = modHelper.GetJsonDataFromFile<SkillMultiplierConfig>(ModFolder, "config.json")
-                         ?? new SkillMultiplierConfig();
-            }
-            else
-            {
-                Config = new SkillMultiplierConfig();
-                SaveConfig();
-            }
-        }
-        catch (Exception ex)
-        {
-            // A malformed config must not stop the server from booting: fall back to vanilla.
-            logger.Error($"[SkillMultiplier] config.json could not be read, falling back to vanilla values. {ex.Message}");
-            Config = new SkillMultiplierConfig();
-        }
-
-        Config.Multipliers = new Dictionary<string, double>(
-            Config.Multipliers ?? [],
-            StringComparer.OrdinalIgnoreCase
-        );
-
-        Config.Actions = new Dictionary<string, double>(
-            Config.Actions ?? [],
-            StringComparer.OrdinalIgnoreCase
-        );
-
-        // A hand-edited config bypasses the save endpoint's validation, so the same bound is enforced here:
-        // per-row values are guarded by GetMultiplier at apply time, and the global gets the same treatment
-        // at load. The game itself is doubly protected - the client clamps the pushed table again - but the
-        // page should never show a value the game will not use.
-        Config.GlobalMultiplier = ClampGlobal(Config.GlobalMultiplier);
+        _config.Load(ConfigPath, ModFolder);
 
         // Detection only. Migrating here would take the choice away: the page asks first, and the migrate
-        // endpoint runs this on demand. See RunLegacyMigration.
-        if (HasLegacyServerConfig())
+        // endpoint runs this on demand.
+        if (_legacy.Has(ConfigPath))
         {
-            logger.Info(
+            _logger.Info(
                 "[SkillMultiplier] Found settings from the previous release (CraftingExpMultiplier and/or "
                 + "HideoutExpMultiplier). They are left alone until the page asks to migrate them."
             );
@@ -590,290 +268,39 @@ public sealed class SkillMultiplierMod(
     /// Whether the previous release's settings are still sitting in config.json. Read off the file rather
     /// than memory: the page asks about them, and the answer must still be right if the file changed.
     /// </summary>
-    public bool HasLegacyServerConfig()
-    {
-        var root = ReadLegacyRoot();
-
-        return root != null
-            && (LegacyValue(root, "CraftingExpMultiplier") is not null
-                || LegacyValue(root, "HideoutExpMultiplier") is not null);
-    }
+    public bool HasLegacyServerConfig() => _legacy.Has(ConfigPath);
 
     /// <summary>
     /// Carry the previous release's settings over, on demand from the migrate endpoint - never at boot.
-    /// <para>
-    /// The old mod's config was two fields rather than a key map. Writing the file back in the new shape
-    /// is what makes this a one-shot: the legacy fields are gone afterwards, so asking again finds nothing
-    /// and a value the user has since changed on the page is never overwritten.
-    /// </para>
     /// </summary>
     /// <returns>True when legacy fields were present (and are now gone).</returns>
-    public bool RunLegacyMigration()
-    {
-        var root = ReadLegacyRoot();
-
-        if (root == null)
-        {
-            return false;
-        }
-
-        var crafting = LegacyValue(root, "CraftingExpMultiplier");
-        var hideout = LegacyValue(root, "HideoutExpMultiplier");
-
-        if (crafting is null && hideout is null)
-        {
-            return false;
-        }
-
-        var migrated = new List<string>();
-
-        if (hideout is { } hideoutValue && Math.Abs(hideoutValue - 1.0) > 1e-9)
-        {
-            // Exactly the two values the old mod scaled, so these are the same levers and not an approximation.
-            MapLegacy("HideoutManagement", "SkillPointsPerCraft", hideoutValue, migrated);
-            MapLegacy("HideoutManagement", "SkillPointsPerAreaUpgrade", hideoutValue, migrated);
-        }
-
-        if (crafting is { } craftingValue && Math.Abs(craftingValue - 1.0) > 1e-9)
-        {
-            // Deliberately not mapped onto Crafting.PointsPerCraftingCycle, which is the near-miss. The old
-            // field scaled hideoutConfig.CraftingExpAmount, added once per *alternating* craft in a module;
-            // PointsPerCraftingCycle is the separate rate paid for *hours spent crafting*, added a few lines
-            // further down the same method in HideoutController. One is not the other, and pointing at it
-            // would multiply the wrong crafting XP while looking like it had worked.
-            logger.Warning(
-                $"[SkillMultiplier] Your old config set CraftingExpMultiplier = {craftingValue}. That scaled "
-                + "crafting XP per alternating craft in a hideout module, which this version has no multiplier "
-                + "for. For the same effect set craftingExpAmount in SPT_Data\\configs\\hideout.json directly; "
-                + "the Crafting multipliers on the page scale the separate hours-of-crafting rate."
-            );
-        }
-
-        if (migrated.Count > 0)
-        {
-            logger.Success($"[SkillMultiplier] Carried over the old config: {string.Join(", ", migrated)}");
-        }
-
-        SaveConfig();
-
-        return true;
-    }
+    public bool RunLegacyMigration() => _legacy.Run(_config, ConfigPath, SaveConfig);
 
     /// <summary>
     /// The user declined the migration: drop the legacy fields so the page stops asking, without applying
     /// anything. Explicit and permanent, which is why it only runs from the migrate endpoint.
     /// </summary>
     /// <returns>True when legacy fields were present (and are now gone).</returns>
-    public bool DeclineLegacyMigration()
-    {
-        if (!HasLegacyServerConfig())
-        {
-            return false;
-        }
-
-        logger.Info("[SkillMultiplier] Leaving the previous release's settings unmigrated, as asked.");
-
-        // A save in the new shape is exactly a file without the legacy fields.
-        SaveConfig();
-
-        return true;
-    }
-
-    /// <summary>The config file as JSON, or null when it is missing or malformed. Never throws.</summary>
-    private JsonObject? ReadLegacyRoot()
-    {
-        try
-        {
-            if (!File.Exists(ConfigPath))
-            {
-                return null;
-            }
-
-            return JsonNode.Parse(File.ReadAllText(ConfigPath)) as JsonObject;
-        }
-        catch (Exception ex)
-        {
-            logger.Warning($"[SkillMultiplier] Could not read config.json to look for old settings: {ex.Message}");
-
-            return null;
-        }
-    }
+    public bool DeclineLegacyMigration() => _legacy.Decline(_config, ConfigPath, SaveConfig);
 
     /// <summary>
     /// The previous release's fields still sitting in config.json. A rewrite of the file - Reset, or any
     /// save - clears what the page shows, never what it cannot see, so callers that rewrite put this back.
     /// </summary>
-    public Dictionary<string, double> LegacySnapshot()
-    {
-        var snapshot = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        var root = ReadLegacyRoot();
-
-        if (root == null)
-        {
-            return snapshot;
-        }
-
-        foreach (var key in new[] { "CraftingExpMultiplier", "HideoutExpMultiplier" })
-        {
-            if (LegacyValue(root, key) is { } value)
-            {
-                snapshot[key] = value;
-            }
-        }
-
-        return snapshot;
-    }
+    public Dictionary<string, double> LegacySnapshot() => _legacy.Snapshot(ConfigPath);
 
     /// <summary>
     /// Put back what <see cref="LegacySnapshot"/> took. Never throws: losing the snapshot costs a pending
     /// migration question, which is exactly what this exists to prevent - but failing a save over it would
     /// be worse.
     /// </summary>
-    public void RestoreLegacySnapshot(Dictionary<string, double> snapshot)
-    {
-        if (snapshot.Count == 0)
-        {
-            return;
-        }
+    public void RestoreLegacySnapshot(Dictionary<string, double> snapshot) => _legacy.Restore(ConfigPath, snapshot);
 
-        try
-        {
-            if (JsonNode.Parse(File.ReadAllText(ConfigPath)) is not JsonObject root)
-            {
-                return;
-            }
-
-            foreach (var (key, value) in snapshot)
-            {
-                root[key] = value;
-            }
-
-            var tmp = ConfigPath + ".tmp";
-            File.WriteAllText(tmp, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            File.Move(tmp, ConfigPath, overwrite: true);
-        }
-        catch (Exception ex)
-        {
-            logger.Warning($"[SkillMultiplier] Could not keep the previous release's settings: {ex.Message}");
-        }
-    }
-
-    private void MapLegacy(string skill, string field, double value, List<string> migrated)
-    {
-        var key = $"Settings.{skill}.{field}";
-
-        if (!Catalog.All.Any(entry => entry.Key == key))
-        {
-            logger.Warning($"[SkillMultiplier] No catalog entry for {key}; leaving the old value {value} alone.");
-            return;
-        }
-
-        // A value typed on the page wins: this fills in what is not already set, it does not impose.
-        if (Config.Multipliers.ContainsKey(key))
-        {
-            return;
-        }
-
-        Config.Multipliers[key] = value;
-        migrated.Add($"{key} = {value}");
-    }
-
-    private static double? LegacyValue(JsonObject root, string name)
-    {
-        if (root.TryGetPropertyValue(name, out var node)
-            && node is JsonValue value
-            && value.TryGetValue<double>(out var parsed))
-        {
-            return parsed;
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Snapshot the untouched values. Only ever runs once, and only before any multiplier has been
-    /// applied - re-capturing later would fold the previous multiplier into the new base.
-    /// </summary>
-    private void CaptureBase()
-    {
-        if (_base.Count > 0)
-        {
-            return;
-        }
-
-        var settings = globalTable.Configuration.SkillsSettings;
-
-        foreach (var entry in Catalog.All)
-        {
-            try
-            {
-                _base[entry.Key] = entry.Get(settings);
-            }
-            catch (Exception ex)
-            {
-                logger.Warning($"[SkillMultiplier] Could not read base value for {entry.Key}: {ex.Message}");
-            }
-        }
-    }
+    /// <summary>Snapshot the untouched values. Only ever runs once, and only before any multiplier.</summary>
+    private void CaptureBase() => _applier.CaptureBase(_globalTable.Configuration.SkillsSettings);
 
     /// <summary>Push the current config into the live table. Safe to call repeatedly.</summary>
-    public void Apply()
-    {
-        lock (_gate)
-        {
-            var settings = globalTable.Configuration.SkillsSettings;
-            var changed = 0;
-
-            foreach (var entry in Catalog.All)
-            {
-                if (!_base.TryGetValue(entry.Key, out var baseValue))
-                {
-                    continue;
-                }
-
-                // Row multiplier only - the global must never enter here. It is applied exactly once, by the
-                // client at Skill.OnTrigger; baking it into globals as well would multiply every both-halves
-                // skill by it twice, silently.
-                var multiplier = Config.Enabled ? GetMultiplier(entry.Key) : 1.0;
-                var target = baseValue * multiplier;
-
-                try
-                {
-                    entry.Set(settings, target);
-
-                    if (Math.Abs(multiplier - 1.0) > double.Epsilon)
-                    {
-                        changed++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.Warning($"[SkillMultiplier] Could not write {entry.Key}: {ex.Message}");
-                }
-            }
-
-            logger.Info(
-                $"[SkillMultiplier] Applied {changed} non-default multiplier(s) "
-                + $"(mod {(Config.Enabled ? "enabled" : "DISABLED, values are vanilla")})."
-            );
-        }
-    }
-
-    private double GetMultiplier(string key)
-    {
-        if (!Config.Multipliers.TryGetValue(key, out var value))
-        {
-            return 1.0;
-        }
-
-        if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
-        {
-            logger.Warning($"[SkillMultiplier] Ignoring invalid multiplier {value} for {key}; using 1.0.");
-            return 1.0;
-        }
-
-        return Math.Clamp(value, 0.0, MaxMultiplier);
-    }
+    public void Apply() => _applier.Apply(_globalTable.Configuration.SkillsSettings, _config);
 
     /// <summary>
     /// Hard ceiling, enforced on the server so a hand-edited config cannot push a value nobody typed into the
@@ -886,50 +313,27 @@ public sealed class SkillMultiplierMod(
     /// </summary>
     public const double MaxMultiplier = 1000.0;
 
-    public double GetBase(string key) => _base.TryGetValue(key, out var v) ? v : 0.0;
+    public double GetBase(string key) => _applier.GetBase(key);
 
     public void ReplaceConfig(SkillMultiplierConfig incoming)
     {
-        // Field-by-field on purpose (the incoming record is request data and is not trusted), but it means
-        // every new setting must be added here too: a field omitted from this list silently reverts to the
-        // record's default, so the UI would accept a change and the server would ignore it.
-        Config = new SkillMultiplierConfig
+        // Locked with the clear: a repair grant resolving ambiguity must not add to the warned set
+        // while a save clears it (re-entrant with the grant path, which only reads).
+        lock (_gate)
         {
-            Enabled = incoming.Enabled,
-            DisableFatigue = incoming.DisableFatigue,
-            GlobalMultiplier = ClampGlobal(incoming.GlobalMultiplier),
-            Multipliers = new Dictionary<string, double>(incoming.Multipliers ?? [], StringComparer.OrdinalIgnoreCase),
-            Actions = new Dictionary<string, double>(incoming.Actions ?? [], StringComparer.OrdinalIgnoreCase),
-        };
+            _config.Replace(incoming);
 
-        Revision++;
-    }
+            // The rows changed, so any ambiguity verdict from before may no longer hold: clear the warned set
+            // so a still-ambiguous skill warns again against the new values (and a resolved one goes quiet
+            // until it disagrees anew).
+            _rules.ClearAmbiguityRecord();
 
-    /// <summary>
-    /// The save endpoint's bound, shared with file load: a stored value the page would reject must not
-    /// reach the table either. Invalid becomes 1.0 rather than 0 - a corrupt file should read as vanilla,
-    /// not as zero XP.
-    /// </summary>
-    private static double ClampGlobal(double value)
-    {
-        if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
-        {
-            return 1.0;
+            Interlocked.Increment(ref _revision);
         }
-
-        return Math.Clamp(value, 0.0, MaxMultiplier);
     }
 
     /// <summary>Writes via a temp file and a move, so a crash mid-write cannot leave a truncated config.</summary>
-    public void SaveConfig()
-    {
-        var json = JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true });
-        var tmp = ConfigPath + ".tmp";
-
-        Directory.CreateDirectory(ModFolder);
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, ConfigPath, overwrite: true);
-    }
+    public void SaveConfig() => _config.Save(ConfigPath, ModFolder);
 
     /// <summary>
     /// Two mods scaling the same numbers compound, and this mod's snapshot would capture an
@@ -939,23 +343,35 @@ public sealed class SkillMultiplierMod(
     {
         try
         {
-            var modsRoot = Path.Combine(Path.GetDirectoryName(ModFolder) ?? ModFolder);
-            var parent = Directory.GetParent(modsRoot)?.FullName ?? modsRoot;
+            // ModFolder is already .../user/mods/<own-folder>: enumerate it directly. (An earlier version
+            // went one level further up to .../user/, so a second copy inside user/mods - the exact
+            // failure the README warns compounds - was never found.)
+            var modsRoot = Path.GetDirectoryName(ModFolder) ?? ModFolder;
 
-            if (!Directory.Exists(parent))
+            if (!Directory.Exists(modsRoot))
             {
                 return;
             }
 
+            var ownPath = Path.GetFullPath(ModFolder).TrimEnd(Path.DirectorySeparatorChar);
+
+            // Filesystem-appropriate case rules: Windows folds case, so an Ordinal check would treat a
+            // differently-cased sibling as this mod and miss a real duplicate; elsewhere the folders really
+            // are different, so only an exact match excludes. Server mods run on Linux hosts too.
+            var pathComparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
             var conflicting = Directory
-                .GetDirectories(parent)
+                .GetDirectories(modsRoot)
+                .Where(dir => !Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar)
+                    .Equals(ownPath, pathComparison))
                 .Select(Path.GetFileName)
-                .Where(name => name != null &&
-                               name.Contains("SkillMultiplier", StringComparison.OrdinalIgnoreCase));
+                .Where(name => name != null && IsSameModFolder(name));
 
             foreach (var name in conflicting)
             {
-                logger.Warning(
+                _logger.Warning(
                     $"[SkillMultiplier] '{name}' appears to scale the same skill values. Two multipliers "
                     + "compound, and this mod captures its base values at startup, so a value it captured "
                     + "may already have been scaled. Disable one of the two mods."
@@ -964,7 +380,20 @@ public sealed class SkillMultiplierMod(
         }
         catch (Exception ex)
         {
-            logger.Debug($"[SkillMultiplier] Conflict scan skipped: {ex.Message}");
+            _logger.Debug($"[SkillMultiplier] Conflict scan skipped: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Whether a sibling mod folder looks like another copy of this mod: the normalized name contains the
+    /// mod name, so renamed copies (<c>dazzuh-skillmultiplier</c>), suffixed backups left inside
+    /// <c>user/mods</c> (<c>SkillMultiplier.bak</c>) and plain duplicates all match. Our own folder is
+    /// excluded by full-path comparison before this is asked, so a contains-match cannot self-fire.
+    /// </summary>
+    private static bool IsSameModFolder(string name)
+    {
+        var normalized = new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+        return normalized.Contains("skillmultiplier", StringComparison.Ordinal);
     }
 }

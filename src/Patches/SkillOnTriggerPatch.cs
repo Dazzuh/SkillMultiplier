@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using EFT;
 using SPT.Reflection.Patching;
@@ -40,12 +41,22 @@ internal class SkillOnTriggerPatch : ModulePatch
 {
     protected override MethodBase GetTargetMethod()
     {
-        return typeof(Skill).GetMethod("OnTrigger", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        // Fail fast, not cryptic: a game update that renames this method must surface here at startup,
+        // naming the expected signature, rather than as a silent no-op with vanilla XP. Pinned by
+        // parameter types, so a future overload surfaces as "not found" rather than AmbiguousMatch.
+        return typeof(Skill).GetMethod("OnTrigger", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null, new[] { typeof(SkillManager.SkillAction), typeof(float) }, null)
+            ?? throw new InvalidOperationException(
+                "Skill.OnTrigger (instance) was not found - check the supported game version.");
     }
 
     [PatchPrefix]
     private static void Prefix(Skill __instance, SkillManager.SkillAction skillAction, ref float val)
     {
+        // This prefix runs on the game's main thread, so it is the pump for everything that must read
+        // game objects: a requested table rebuild is drained here before any multiplier is applied.
+        TableClient.DrainMainThread();
+
         if (skillAction == null)
         {
             return;
@@ -89,8 +100,14 @@ internal class SkillOnTriggerPatch : ModulePatch
             return;
         }
 
+        // Captured before the multiply: dividing the scaled value back down prints NaN/Infinity for a
+        // zero row, while the baseline is always the honest number.
+        var baseline = val;
         val *= multiplier * global;
 
-        Plugin.DebugLog($"[SkillMultiplier] {__instance.Id} gained {val / (multiplier * global)} x{multiplier} x{global} = {val}.");
+        if (Plugin.IsDebugEnabled)
+        {
+            Plugin.DebugLog($"[SkillMultiplier] {__instance.Id} gained {baseline} x{multiplier} x{global} = {val}.");
+        }
     }
 }

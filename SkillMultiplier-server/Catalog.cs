@@ -40,9 +40,11 @@ public sealed record SkillActionEntry(
     /// patch multiplies what the server pays, live.
     /// </para>
     /// <para>
-    /// This flag is what stops the two being applied to one number twice. A skill with any row still scaling a
-    /// globals value has its XP derived from a value this mod already scaled, so the grant patch leaves it
-    /// alone - otherwise crafting and hideout XP, which are computed from scaled fields, would be squared.
+    /// This flag is what stops the two being applied to one number twice. For a skill whose grants are
+    /// computed from its globals fields (crafting, hideout), a row still scaling a globals value means its
+    /// XP is derived from a value this mod already scaled, so the grant patch leaves it alone - otherwise
+    /// that XP, which is computed from scaled fields, would be squared. Repair and quest grants are computed
+    /// elsewhere, so their skills' rows still apply at grant time.
     /// </para>
     /// </summary>
     bool AppliedAtServerGrant = false);

@@ -26,17 +26,23 @@ refused rather than redirected. Your browser warns once, accept it. `curl` needs
 ## Using it
 
 Each row shows the arithmetic - `vanilla × multiplier = what the game uses` - so a row tells you what it
-will do before you touch it. `Reset all` puts everything back to vanilla without deleting your numbers;
+will do before you touch it. `Reset all` clears every multiplier back to vanilla (toggles restored);
 `Mod enabled` turns every multiplier off while keeping them.
 
 The slider covers the range people actually tune. To go past it, type into the box beside it: the slider
 goes to 10x, the box accepts up to 1000x and the slider simply shows full above its own travel.
+A cleared or non-numeric box is refused (the control reverts); a negative becomes 1.00x. 0 is legal
+and means that action grants no XP at all - its whole skill section gets a red border so it cannot
+hide.
 
 Rows come in two kinds, and they apply at different moments. A row named after the game's own config
 (`Settings.<Skill>.<Field>`) is a value the server hands the game, so it takes effect when the game next
 loads that - relaunch the client after changing one. A row keyed by skill and action (`Endurance[0]`) is
 applied by the client plugin as each event happens, so it lands immediately. Setting both for the same
-action compounds them rather than adding, because they are two separate knobs.
+action compounds them rather than adding, because they are two separate knobs. One ordering caveat:
+the client multiplies before the game's own first-levels curve, so below level 9 a row does not pay
+a flat multiple - a 5x row at level 3 pays noticeably more than 5x vanilla, exactly as patching that
+point implies.
 
 ## Where the XP comes from, and why this needs two halves
 
@@ -51,15 +57,20 @@ skills the client is not allowed to progress, and repairs are paid by the server
 pays the vest skills according to the armour's type, a weapon repair pays Weapon Treatment, and a trader
 repair pays Charisma. None of that passes through the client's skill code, so any client-side patch leaves
 it untouched - those rows are scaled on the server, at the moment it hands the points over. Same list, same
-keys.
+keys. The same row also scales anything else the server pays that skill directly, such as quest and prestige
+rewards - a 5x row means a 100-point quest reward lands as 500. That holds where the row is the single
+value for the skill: conflicting row values, or a skill whose globals-backed rows suppress the grant
+(Crafting, Hideout Management), leave the server-paid amount unchanged.
 
 The hideout gym is paid the same way, but not for an action: it draws strength or endurance at random for each
 successful repetition. It therefore gets a row under each skill it can pay - `Strength[Workout]` and
-`Endurance[Workout]` - and the in-game popup for a repetition reports what you actually earned.
+`Endurance[Workout]` - and the in-game popup for a repetition reports what you actually earned
+(above level 9; below that the game's own first-levels curve applies after the popup figure, as in
+vanilla - only the absolute gap grows with the multiplier).
 
-`FieldMedicine`, `FirstAid`, `RecoilControl`, `WeaponModding`, `AdvancedModding`, `NightOps`, `SilentOps`
-and `Lockpicking` have no XP action of their own in base 4.1, so there is nothing to scale - unless another
-mod gives them one, in which case they appear and are tunable like anything else.
+`FieldMedicine`, `FirstAid`, `RecoilControl`, `WeaponModding`, `AdvancedModding`, `NightOps`, `SilentOps`,
+`ProneMovement` and `Lockpicking` have no XP action of their own in base 4.1, so there is nothing to
+scale - unless another mod gives them one, in which case they appear and are tunable like anything else.
 
 ## Skills added by other mods
 
@@ -96,10 +107,12 @@ Three levels, from broadest to narrowest. Each level multiplies the ones below i
 
 - **Global multiplier**, at the top of the page. One number on top of everything: at 2.00 each row pays
   double whatever it says. Applied by the game client the moment you press Apply - no restart. It does
-  not reach Crafting or Hideout Management, which are server-side skills the client never sees.
+  not reach Crafting, Hideout Management or Weapon Treatment, which are server-side skills the client
+  never sees.
 - **All in this skill**, on each skill section. One slider driving every live row in that skill. Press
   **Unlink** to adjust the rows independently; moving any row unlinks the group on its own. **Link**
-  returns every row to the header slider and drives them together again.
+  keeps the rows' shared value when they agree and takes the header slider when they don't, then
+  drives them together again. While a filter hides rows, only the visible ones are driven.
 - **Rows.** The individual actions, as before.
 
 The group sliders drive the live rows only - never the server-side duplicates under Advanced config,
@@ -115,6 +128,9 @@ which keep their own values so a bulk change cannot set both sides of a duplicat
 
 A save reaches a running game even mid-raid. Either way it only affects future XP: points already
 earned are untouched.
+Changes arriving while the client rebuilds its action map stay pending for the next rebuild.
+After a server restart, reconnecting accepts the server's initial table even when its revision
+counter has restarted.
 
 ## Upgrading from 1.x
 
@@ -134,8 +150,8 @@ migrates on its own, and a fresh install never sees the question:
 - `Increase Limits` is no longer a setting: its only job was raising the cap, which is now 1000 for everyone.
 
 Answering "Don't migrate" drops the question for good: the old server fields are removed unapplied, and
-each game is told to leave its own file alone (the old entries sit there inert - nothing reads them any
-more). The carried values appear on the page afterwards and are editable there, like any other. Make sure no
+each game's own old entries are deleted too (nothing reads them any more, so keeping them would only
+ask again). The carried values appear on the page afterwards and are editable there, like any other. Make sure no
 second copy of this mod is installed under a different folder name - two copies both scale the same numbers,
 and the result is not what either of them says.
 

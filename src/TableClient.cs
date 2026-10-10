@@ -22,6 +22,14 @@ namespace SkillMultiplier;
 /// No port or certificate handling appears here on purpose: <see cref="RequestHandler"/> resolves the host
 /// and session id from the process arguments SPT launched the game with, and accepts the self-signed cert.
 /// </para>
+/// <para>
+/// Threading contract: the socket and heartbeat threads parse and store pushed data only - they never
+/// touch game objects. Everything that reads the live <c>SkillManager</c> (resolving it, walking action
+/// arrays, reading <c>FactorValue</c> getters, reflective member mapping) runs in
+/// <see cref="DrainMainThread"/>, which only ever executes on the game's main thread via <c>Plugin.Update</c>
+/// and the XP patches' prefixes. Unity object reads off the main thread are not safe, so background threads request work
+/// with <see cref="RequestRebuild"/> and the reporter's <c>SendStaged</c> instead of doing it.
+/// </para>
 /// </summary>
 internal static class TableClient
 {
@@ -44,9 +52,33 @@ internal static class TableClient
     /// <summary>The table's actions, as pushed. Kept so the map can be rebuilt once the profile loads.</summary>
     private static Dictionary<string, float> _actions = [];
 
+    /// <summary>
+    /// A rebuild is owed to the game's main thread. Set by the socket thread (each push), the HTTP fallback
+    /// and the heartbeat; consumed by <see cref="DrainMainThread"/> before reading the current table.
+    /// Starts set so the first profile load builds the map without waiting for a push.
+    /// </summary>
+    private static volatile bool _rebuildRequested = true;
+
+    /// <summary>
+    /// Ask the game's main thread to re-read the action list and republish the map. Safe from any thread:
+    /// it only sets the flag. The actual game-object reads happen in <see cref="DrainMainThread"/>.
+    /// </summary>
+    internal static void RequestRebuild() => _rebuildRequested = true;
+
     private static int _revision = -1;
     private static int _loggedRevision = int.MinValue;
-    private static bool _catalogLogged;
+    private static int _warnedRevision = int.MinValue;
+
+    /// <summary>
+    /// Connection counter, bumped for every socket before it connects and published on success.
+    /// Deliveries carry the value their socket reserved: a delayed message from a replaced or failed
+    /// socket arrives with a stale epoch and is dropped, so it can never overwrite the live
+    /// connection's table. Guarded by <c>Gate</c> like <c>_revision</c>.
+    /// </summary>
+    private static int _epoch;
+    // Volatile: written on the main thread (drain), read on the heartbeat thread. Worst case without
+    // it is a duplicate catalog dump, but a torn read is not a thing this file trades in.
+    private static volatile bool _catalogLogged;
     private static volatile string _socketUrl;
 
     /// <summary>
@@ -58,6 +90,10 @@ internal static class TableClient
 
     internal static void Start()
     {
+        // Warm the legacy-config answer now, during plugin load: the first per-frame drain must not be
+        // the one that discovers the file read.
+        LegacyConfig.WarmLegacyCache();
+
         var thread = new Thread(Run) { IsBackground = true, Name = "SkillMultiplier.Table" };
         thread.Start();
     }
@@ -77,7 +113,14 @@ internal static class TableClient
 
             if (!string.IsNullOrWhiteSpace(json))
             {
-                Apply(json);
+                int epoch;
+
+                lock (Gate)
+                {
+                    epoch = _epoch;
+                }
+
+                Apply(json, epoch);
             }
         }
         catch (Exception ex)
@@ -106,17 +149,41 @@ internal static class TableClient
         {
             try
             {
+                // One iteration owns exactly one socket: `using` disposes it at the end, which is safe
+                // only because iterations run strictly sequentially on this single loop thread - a second
+                // concurrent disposer would race in-flight deliveries. Never share or move this socket
+                // off this thread.
                 using var socket = new WebSocketSharp.WebSocket(url);
+
+                // Reserve before connect so replaced sockets are fenced out. A failed handshake leaves
+                // the accepted revision unchanged; OnOpen resets it before this socket delivers tables.
+                // Publish the socket only after the liveness check.
+                int epoch;
+
                 lock (Gate)
                 {
-                    _socket = socket;
+                    _epoch++;
+                    epoch = _epoch;
                 }
+
                 socket.SslConfiguration.ServerCertificateValidationCallback = (_, _, _, _) => true;
+                socket.OnOpen += (_, _) =>
+                {
+                    lock (Gate)
+                    {
+                        // websocket-sharp queues messages until OnOpen returns. Reset here, not after
+                        // Connect: a restarted server can immediately push a lower revision.
+                        if (epoch == _epoch)
+                        {
+                            _revision = -1;
+                        }
+                    }
+                };
                 socket.OnMessage += (_, e) =>
                 {
                     if (e.IsText)
                     {
-                        Apply(e.Data);
+                        Apply(e.Data, epoch);
                     }
                 };
                 socket.OnError += (_, e) => Plugin.Log.LogWarning($"[SkillMultiplier] Websocket error: {e.Message}");
@@ -126,6 +193,11 @@ internal static class TableClient
                 if (!socket.IsAlive)
                 {
                     throw new Exception("the websocket did not open");
+                }
+
+                lock (Gate)
+                {
+                    _socket = socket;
                 }
 
                 Plugin.DebugLog($"[SkillMultiplier] Connected to the server at {url}.");
@@ -176,13 +248,19 @@ internal static class TableClient
     {
         Quitting = true;
 
+        // Snapshot under the gate, close outside it: Close() runs a network handshake that must not
+        // hold the lock the loop thread needs to clear the field.
+        WebSocketSharp.WebSocket socket;
+
+        lock (Gate)
+        {
+            socket = _socket;
+            _socket = null;
+        }
+
         try
         {
-            lock (Gate)
-            {
-                _socket?.Close();
-                _socket = null;
-            }
+            socket?.Close();
         }
         catch (Exception ex)
         {
@@ -234,7 +312,7 @@ internal static class TableClient
         public Dictionary<string, double> Actions { get; set; }
     }
 
-    private static void Apply(string json)
+    private static void Apply(string json, int epoch)
     {
         try
         {
@@ -249,8 +327,19 @@ internal static class TableClient
 
             lock (Gate)
             {
-                // A push that is not newer is either a duplicate or the HTTP fallback racing the socket.
-                if (message.Revision == _revision && _revision >= 0)
+                // Stale connection first: a delayed delivery from a replaced or failed socket must not
+                // overwrite the live connection's table, whatever revisions the two carry.
+                if (epoch != _epoch)
+                {
+                    return;
+                }
+
+                // A push that is not newer is either a duplicate, the HTTP fallback racing the socket, or
+                // an out-of-order delivery - applying a stale table would regress live multipliers, so
+                // anything at or below the held revision is dropped. (An equal revision with different
+                // content, e.g. a hand-posted table reusing a revision, is dropped too: staleness wins
+                // over freshness here because revisions only ever increase from the server.)
+                if (message.Revision <= _revision && _revision >= 0)
                 {
                     return;
                 }
@@ -262,7 +351,12 @@ internal static class TableClient
                 {
                     foreach (var (key, value) in message.Actions)
                     {
-                        _actions[key] = (float)value;
+                        // Clamped per row, like the global below: a hand-posted push carrying NaN, infinity
+                        // or a negative must not reach live game maths. (float)NaN would otherwise flow
+                        // straight into FactorValue multiplications.
+                        _actions[key] = double.IsNaN(value) || double.IsInfinity(value) || value < 0
+                            ? 1f
+                            : (float)Math.Min(value, 1000.0);
                     }
                 }
 
@@ -297,7 +391,9 @@ internal static class TableClient
             // HTTP fallback may have already applied this same table.
             Plugin.SetFatigueDisabled(disableFatigue);
 
-            Rebuild();
+            // Game objects are read on the game's main thread, not here: queue the rebuild for the next
+            // XP patch tick rather than walking the SkillManager off-thread.
+            RequestRebuild();
         }
         catch (Exception ex)
         {
@@ -307,11 +403,21 @@ internal static class TableClient
     }
 
     /// <summary>
-    /// Turn the pushed keys into action objects. Safe to call repeatedly, and called again from the
-    /// heartbeat because the table can arrive before the profile - and therefore the SkillManager - exists.
+    /// Run the game-object half of a pending rebuild. Must only ever run on the game's main thread - it is
+    /// called from the XP patches' prefixes and from <c>Plugin.Update</c>, which the game invokes there.
+    /// Safe to call repeatedly: the flag check first keeps the unowed case to one volatile read.
+    /// <para>
+    /// When the profile has not loaded yet the manager resolves to null and the request stays set, so the
+    /// next tick retries - which is what makes table/push-vs-profile-load ordering irrelevant.
+    /// </para>
     /// </summary>
-    internal static void Rebuild()
+    internal static void DrainMainThread()
     {
+        if (!_rebuildRequested)
+        {
+            return;
+        }
+
         var manager = ActionCatalog.Resolve();
 
         if (manager == null)
@@ -319,51 +425,87 @@ internal static class TableClient
             return;
         }
 
-        // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
-        // with what the server is being told, and requiring a debug flag to see it makes that evidence
-        // unavailable exactly when a mapping surprise needs explaining.
-        if (!_catalogLogged)
+        // Runs inside Harmony prefixes and Update: failures must retry without escaping into game code.
+        // Capture the attempted revision for warning throttling, not whatever arrives mid-drain.
+        int revision = -1;
+
+        try
         {
-            _catalogLogged = true;
-            ActionCatalog.LogCatalog(manager);
-        }
+            // Consume before snapshotting the table. A push during the work re-arms this flag, and
+            // success must not clear that newer request. Failure re-arms it in the catch below.
+            _rebuildRequested = false;
 
-        // Introduce this client's action list to the server, so its UI can render the actions that only
-        // exist here. Re-armed on each reconnect, since the server keeps it per session.
-        LegacyConfig.Tick(manager);
-        ClientCatalogReporter.Flush(manager);
-
-        Dictionary<string, float> actions;
-
-        lock (Gate)
-        {
-            actions = _actions;
-        }
-
-        var map = ActionCatalog.BuildMap(manager, actions);
-        Plugin.Multipliers = map;
-
-        // Log once per revision. The heartbeat re-runs this, so an empty table would otherwise print a line
-        // every few seconds for the whole session.
-        if (_revision != _loggedRevision)
-        {
-            _loggedRevision = _revision;
-
-            foreach (var (key, value) in actions)
+            // Dump the catalog once, unconditionally: it is the evidence for whether the client's keys line up
+            // with what the server is being told, and requiring a debug flag to see it makes that evidence
+            // unavailable exactly when a mapping surprise needs explaining.
+            if (!_catalogLogged)
             {
-                Plugin.DebugLog($"[SkillMultiplier] table: {key} = {value}");
+                _catalogLogged = true;
+                ActionCatalog.LogCatalog(manager);
             }
 
-            Plugin.DebugLog(
-                $"[SkillMultiplier] Revision {_revision}: {map.Count} of {actions.Count} action multiplier(s) "
-                    + "mapped to actions in this client."
-            );
+            Dictionary<string, float> actions;
+            int drainedRevision;
+
+            lock (Gate)
+            {
+                actions = _actions;
+                drainedRevision = _revision;
+            }
+
+            // Published for the catch below, which cannot see try-scoped locals: the failure belongs to
+            // this generation, not whatever arrives mid-drain.
+            revision = drainedRevision;
+
+            Plugin.Multipliers = ActionCatalog.BuildMap(manager, actions);
+
+            // Log once per revision. The heartbeat re-requests this, so an empty table would otherwise print a
+            // line every few seconds for the whole session.
+            if (drainedRevision != _loggedRevision)
+            {
+                _loggedRevision = drainedRevision;
+
+                foreach (var (key, value) in actions)
+                {
+                    Plugin.DebugLog($"[SkillMultiplier] table: {key} = {value}");
+                }
+
+                Plugin.DebugLog(
+                    $"[SkillMultiplier] Revision {drainedRevision}: {Plugin.Multipliers.Count} of {actions.Count} action multiplier(s) "
+                        + "mapped to actions in this client."
+                );
+            }
+
+            // One Describe feeds both consumers, so the reflection walk happens once per drain: the migration
+            // tick reads the staged copy on its background thread, and the reporter stages it for a
+            // background send. Neither re-walks game objects.
+            var described = ActionCatalog.Describe(manager);
+            LegacyConfig.OfferDescribed(described);
+            ClientCatalogReporter.StageForSend(described);
+        }
+        catch (Exception ex)
+        {
+            RequestRebuild();
+
+            // Once per revision, not once per frame: a deterministically-throwing drain rides the 60Hz
+            // Update pump, and per-frame warnings would bury the log. The request is re-armed so a
+            // transient failure retries next tick. Judge the revision this drain attempted,
+            // not whatever arrived mid-drain.
+            if (revision != _warnedRevision)
+            {
+                _warnedRevision = revision;
+                Plugin.Log.LogWarning($"[SkillMultiplier] Table rebuild failed, will retry: {ex.Message}");
+            }
         }
     }
 
     /// <summary>
     /// Retry building the map on a slow timer. Only the first successful build matters in practice; this is
     /// what makes ordering between "table arrived" and "profile loaded" irrelevant.
+    /// <para>
+    /// Game objects are never touched here: this only re-requests the rebuild (drained on the game's main
+    /// thread) and sends an already-staged catalog report. Both are safe from a background thread.
+    /// </para>
     /// </summary>
     internal static void StartHeartbeat()
     {
@@ -376,17 +518,17 @@ internal static class TableClient
                 try
                 {
                     // Also runs when the catalog has not been dumped yet, so a client whose sync failed still
-                    // records what its own action list looks like.
+                    // records what its own action list looks like - on the next main-thread tick.
                     if (!_catalogLogged || Plugin.Multipliers.Count == 0)
                     {
-                        Rebuild();
+                        RequestRebuild();
                     }
 
-                    // While a report is still owed - the profile may not have existed at the first attempt, or
-                    // the server may have restarted since - keep trying on this slow timer.
-                    var resolved = ActionCatalog.Resolve();
-                    LegacyConfig.Tick(resolved);
-                    ClientCatalogReporter.Flush(resolved);
+                    // The migration tick (file + network IO) and the staged report send both run here, on a
+                    // background thread, consuming what the main-thread drain staged. Neither touches game
+                    // objects - and while a report is still owed, this keeps retrying on the slow timer.
+                    LegacyConfig.Tick();
+                    ClientCatalogReporter.SendStaged();
                 }
                 catch (Exception ex)
                 {
